@@ -34,12 +34,13 @@ DSN для дальнейших команд:
 
 Первый запуск:
 ```bash
+docker pull elastic/elasticsearch:8.14.1
 sudo docker run --name es8 -p 9200:9200 -p 9300:9300 \
   -e discovery.type=single-node \
   -e xpack.security.enabled=false \
   -e ES_JAVA_OPTS="-Xms2g -Xmx2g" \
   -v esdata:/usr/share/elasticsearch/data \
-  docker.elastic.co/elasticsearch/elasticsearch:8.14.1
+  elastic/elasticsearch:8.14.1
 ```
 Впоследующем:
 ```bash
