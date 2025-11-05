@@ -1,26 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-build_library_db.py — собрать PostgreSQL БД из EPUB-папки и проиндексировать Elasticsearch.
-Текст книг в Postgres НЕ сохраняется (только пути, оглавление и метаданные).
-Цитатный поиск — по ES; база подготовлена к будущей векторизации (pgvector/dense_vector).
+build_library_db.py — EPUB -> PostgreSQL (метаданные) + Elasticsearch (текст по абзацам).
+ТЕКСТ книг в Postgres НЕ хранится. Текст только в ES.
 
-Зависимости:
-  pip install psycopg2-binary beautifulsoup4 lxml tqdm requests unidecode
-
-Пример запуска (создать БД и ПОЛНОСТЬЮ ПЕРЕСОЗДАТЬ схему):
-  python build_library_db.py \
-    --dsn postgresql://user:pass@localhost:5432/library \
-    --root /path/to/epubs \
-    --create-db --recreate-schema \
-    --es-url http://localhost:9200 \
-    --es-use-templates --es-enable-suggest \
-    --chunk-words 800 --chunk-overlap 80
-
-Векторизация позже:
-  - Postgres: добавьте --with-pgvector (и при необходимости создайте ANN-индекс).
-  - Elasticsearch: добавьте --es-dense-vector-dim > 0, чтобы хранить эмбеддинги в ES.
+Изменение: в индекс контента ES поле "title" теперь ВСЕГДА берётся из dc:title OPF
+(метаданные книги). Заголовки глав НЕ подставляются в это поле.
 """
+
 import argparse
 import hashlib
 import json
@@ -33,15 +20,14 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
 import psycopg2
-import psycopg2.extras
 import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 import unicodedata
 
-# ---------------- configuration / helpers ----------------
+# ---------------- helpers ----------------
 
-WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)  # только "словные" (без цифр/подчёркиваний)
+WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 
 SCHEMA_SQL = """
 -- === базовая схема Postgres (БЕЗ текста книг) ===
@@ -85,7 +71,7 @@ CREATE TABLE IF NOT EXISTS editions (
   id          BIGSERIAL PRIMARY KEY,
   book_id     BIGINT REFERENCES books(id) ON DELETE CASCADE,
   format      TEXT NOT NULL,
-  storage_key TEXT NOT NULL,   -- ПУТЬ к EPUB-файлу
+  storage_key TEXT NOT NULL,   -- путь к файлу EPUB
   size_bytes  BIGINT,
   sha256      TEXT UNIQUE,
   drm         BOOLEAN,
@@ -93,7 +79,7 @@ CREATE TABLE IF NOT EXISTS editions (
   created_at  TIMESTAMPTZ DEFAULT now()
 );
 
--- Оглавление/главы: без текста
+-- Оглавление/главы (без текста)
 CREATE TABLE IF NOT EXISTS edition_chapters (
   id          BIGSERIAL PRIMARY KEY,
   edition_id  BIGINT REFERENCES editions(id) ON DELETE CASCADE,
@@ -102,27 +88,30 @@ CREATE TABLE IF NOT EXISTS edition_chapters (
   href        TEXT
 );
 
--- Метаданные чанков (без текста) для цитат/векторов
-CREATE TABLE IF NOT EXISTS content_chunks (
-  id          BIGSERIAL PRIMARY KEY,
-  book_id     BIGINT REFERENCES books(id) ON DELETE CASCADE,
-  edition_id  BIGINT REFERENCES editions(id) ON DELETE CASCADE,
-  chapter_id  BIGINT REFERENCES edition_chapters(id) ON DELETE SET NULL,
-  ord         INT NOT NULL,
-  words_from  INT,
-  words_to    INT,
-  es_index    TEXT,
-  es_doc_id   TEXT UNIQUE,
-  lang        TEXT,
-  embedding   TEXT  -- будет заменено на VECTOR(N), если включён pgvector
+-- Метаданные АБЗАЦЕВ/окон (без текста)
+CREATE TABLE IF NOT EXISTS content_paragraphs (
+  id           BIGSERIAL PRIMARY KEY,
+  book_id      BIGINT REFERENCES books(id) ON DELETE CASCADE,
+  edition_id   BIGINT REFERENCES editions(id) ON DELETE CASCADE,
+  chapter_id   BIGINT REFERENCES edition_chapters(id) ON DELETE SET NULL,
+  para_start   INT NOT NULL,      -- номер первого абзаца окна (0-based)
+  para_end     INT NOT NULL,      -- номер последнего абзаца окна (включительно)
+  window_size  INT NOT NULL,
+  tokens_from  INT,               -- границы по словным токенам в рамках книги/издания
+  tokens_to    INT,
+  es_index     TEXT,
+  es_doc_id    TEXT UNIQUE,
+  lang         TEXT,
+  embedding    TEXT,              -- позже можно заменить на VECTOR(N) при включении pgvector
+  para_type    TEXT,              -- тип первого абзаца в окне: paragraph|heading|list|blockquote|pre
+  is_heading   BOOLEAN
 );
 
-CREATE INDEX IF NOT EXISTS idx_book_authors_author ON book_authors (author_id);
 CREATE INDEX IF NOT EXISTS idx_books_title ON books USING GIN (to_tsvector('simple', coalesce(title,'')));
 CREATE INDEX IF NOT EXISTS idx_books_subjects ON books USING GIN (subjects);
 CREATE INDEX IF NOT EXISTS idx_editions_book ON editions (book_id);
 CREATE INDEX IF NOT EXISTS idx_chapters_ed ON edition_chapters (edition_id, ord);
-CREATE INDEX IF NOT EXISTS idx_chunks_book_ord ON content_chunks (book_id, ord);
+CREATE INDEX IF NOT EXISTS idx_paragraphs_book_start ON content_paragraphs (book_id, para_start);
 """
 
 def sha256_file(path: Path) -> str:
@@ -150,21 +139,89 @@ def tokenize_words(text: str) -> List[str]:
     text = strip_accents_lower(text)
     return WORD_RE.findall(text)
 
-def chunk_words(words: List[str], size: int, overlap: int) -> List[Tuple[int, int, List[str]]]:
-    if size <= 0:
-        return [(0, len(words), words)]
-    overlap = max(0, min(overlap, size - 1))
-    chunks = []
+def html_to_paragraph_blocks(html: str) -> List[Tuple[str, str]]:
+    """
+    Возвращает [(para_type, text), ...] в порядке документа.
+    para_type: 'heading'|'paragraph'|'list'|'blockquote'|'pre'
+    """
+    soup = BeautifulSoup(html, "lxml")
+    for bad in soup(["script", "style", "nav", "aside", "footer", "header"]):
+        bad.decompose()
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
+
+    blocks: List[Tuple[str, str]] = []
+    tags = ["h1","h2","h3","h4","h5","h6","p","li","blockquote","pre","code"]
+    for el in soup.find_all(tags, recursive=True):
+        txt = norm_space(el.get_text(" ").replace("\xa0", " "))
+        if not txt:
+            continue
+        t = el.name.lower()
+        if t in {"h1","h2","h3","h4","h5","h6"}:
+            kind = "heading"
+        elif t == "li":
+            kind = "list"
+        elif t == "blockquote":
+            kind = "blockquote"
+        elif t in {"pre","code"}:
+            kind = "pre"
+        else:
+            kind = "paragraph"
+        blocks.append((kind, txt))
+
+    if not blocks:
+        text = html_to_text(html)
+        paras = [norm_space(p) for p in re.split(r"\n{2,}", text) if norm_space(p)]
+        blocks = [("paragraph", p) for p in paras]
+
+    return blocks
+
+def coalesce_short_paragraphs(blocks: List[Tuple[str,str]], min_words: int) -> List[Tuple[str,str]]:
+    """Склеивает подряд идущие короткие не-заголовочные абзацы до минимума."""
+    out: List[Tuple[str,str]] = []
+    buf_type, buf_txt, buf_w = None, "", 0
+
+    def flush():
+        nonlocal buf_type, buf_txt, buf_w
+        if buf_txt:
+            out.append((buf_type or "paragraph", norm_space(buf_txt)))
+        buf_type, buf_txt, buf_w = None, "", 0
+
+    for kind, txt in blocks:
+        w = len(tokenize_words(txt))
+        if buf_w == 0:
+            buf_type, buf_txt, buf_w = kind, txt, w
+            continue
+        if buf_w < min_words and kind != "heading":
+            buf_txt = f"{buf_txt}\n\n{txt}"
+            buf_w += w
+        else:
+            flush()
+            buf_type, buf_txt, buf_w = kind, txt, w
+    flush()
+    return out
+
+def paragraph_windows(blocks: List[Tuple[str,str]], window_size: int, stride: int):
+    """
+    blocks: список (kind, text) после возможной склейки коротышей.
+    Возвращает [(start, end, [(kind,text), ...]), ...]
+    """
+    window_size = max(1, int(window_size))
+    stride = max(1, int(stride))
+    n = len(blocks)
+    if n == 0:
+        return []
+    if window_size == 1:
+        return [(i, i, [blocks[i]]) for i in range(0, n, stride)]
+    out = []
     i = 0
-    step = size - overlap
-    n = len(words)
-    while i < n:
-        j = min(i + size, n)
-        chunks.append((i, j, words[i:j]))
-        if j >= n:
-            break
-        i += step
-    return chunks
+    last = n - window_size
+    while i <= last:
+        out.append((i, i + window_size - 1, blocks[i:i + window_size]))
+        i += stride
+    return out
+
+# ---------------- DB ops ----------------
 
 def parse_dsn_dbname(dsn: str) -> Optional[str]:
     try:
@@ -197,20 +254,15 @@ def ensure_database(dsn: str):
             cur.execute(f'CREATE DATABASE "{dbname}"')
 
 def drop_schema(conn):
-    """Надёжно вычистить public: все вьюхи и таблицы (на случай старых версий схемы)."""
     with conn.cursor() as cur:
         cur.execute("""
         DO $$ DECLARE r RECORD;
         BEGIN
-          -- views
           FOR r IN (SELECT schemaname, viewname FROM pg_views WHERE schemaname='public') LOOP
-            EXECUTE 'DROP VIEW IF EXISTS '
-                || quote_ident(r.schemaname) || '.' || quote_ident(r.viewname) || ' CASCADE';
+            EXECUTE 'DROP VIEW IF EXISTS '||quote_ident(r.schemaname)||'.'||quote_ident(r.viewname)||' CASCADE';
           END LOOP;
-          -- tables
           FOR r IN (SELECT schemaname, tablename FROM pg_tables WHERE schemaname='public') LOOP
-            EXECUTE 'DROP TABLE IF EXISTS '
-                || quote_ident(r.schemaname) || '.' || quote_ident(r.tablename) || ' CASCADE';
+            EXECUTE 'DROP TABLE IF EXISTS '||quote_ident(r.schemaname)||'.'||quote_ident(r.tablename)||' CASCADE';
           END LOOP;
         END $$;
         """)
@@ -222,7 +274,6 @@ def apply_schema(conn):
     conn.commit()
 
 def enable_pgvector(conn, vector_dim: int):
-    """Опционно заменить content_chunks.embedding TEXT -> VECTOR(dim)."""
     prev = conn.autocommit
     conn.autocommit = True
     try:
@@ -240,182 +291,30 @@ def enable_pgvector(conn, vector_dim: int):
             BEGIN
               IF EXISTS (
                 SELECT 1 FROM information_schema.columns
-                WHERE table_name='content_chunks' AND column_name='embedding' AND data_type='text'
+                WHERE table_name='content_paragraphs' AND column_name='embedding' AND data_type='text'
               ) THEN
-                ALTER TABLE content_chunks DROP COLUMN embedding;
-                ALTER TABLE content_chunks ADD COLUMN embedding VECTOR(%s);
+                ALTER TABLE content_paragraphs DROP COLUMN embedding;
+                ALTER TABLE content_paragraphs ADD COLUMN embedding VECTOR(%s);
               END IF;
             END$$;
         """, (int(vector_dim),))
     conn.commit()
 
-# ---------------- EPUB parsing ----------------
-
-def parse_container_and_opf(z: zipfile.ZipFile) -> str:
-    container_xml = z.read("META-INF/container.xml")
-    import xml.etree.ElementTree as ET
-    root = ET.fromstring(container_xml)
-    ns = {"c": "urn:oasis:names:tc:opendocument:xmlns:container"}
-    rf = root.find(".//c:rootfile", ns)
-    if rf is None:
-        raise RuntimeError("rootfile not found in container.xml")
-    return rf.attrib.get("full-path", "")
-
-def parse_opf(z: zipfile.ZipFile, opf_path: str):
-    import xml.etree.ElementTree as ET
-    opf_xml = z.read(opf_path)
-    opf = ET.fromstring(opf_xml)
-    ns = {"dc": "http://purl.org/dc/elements/1.1/",
-          "opf": "http://www.idpf.org/2007/opf"}
-    def get_text(path):
-        el = opf.find(path, ns)
-        return norm_space(el.text) if el is not None and el.text else ""
-
-    title = get_text(".//dc:title") or None
-    language = (get_text(".//dc:language") or None)
-    publisher = get_text(".//dc:publisher") or None
-    date_raw = get_text(".//dc:date") or ""
-    description = get_text(".//dc:description") or None
-
-    creators = [norm_space(el.text) for el in opf.findall(".//dc:creator", ns) if el is not None and norm_space(el.text)]
-    subjects = [norm_space(s.text) for s in opf.findall(".//dc:subject", ns) if s is not None and norm_space(s.text)]
-    identifiers = []
-    for ide in opf.findall(".//dc:identifier", ns):
-        txt = norm_space(ide.text) if ide is not None and ide.text else ""
-        if txt:
-            scheme = ide.attrib.get("{http://www.idpf.org/2007/opf}scheme", "") or ""
-            identifiers.append(((scheme.upper() or "ID"), txt))
-
-    # manifest
-    mf_items = {}
-    base = str(Path(opf_path).parent)
-    for it in opf.findall(".//{http://www.idpf.org/2007/opf}item"):
-        it_id = it.attrib.get("id")
-        href = it.attrib.get("href")
-        media_type = it.attrib.get("media-type")
-        if it_id and href:
-            href_path = str(Path(base) / href) if base not in ("", ".") else href
-            mf_items[it_id] = (href_path, media_type)
-
-    # spine
-    spine = []
-    for itref in opf.findall(".//{http://www.idpf.org/2007/opf}itemref"):
-        ref = itref.attrib.get("idref")
-        if ref and ref in mf_items:
-            spine.append(mf_items[ref])
-
-    return {
-        "title": title,
-        "creators": creators,
-        "language": language,
-        "publisher": publisher,
-        "date_raw": date_raw,
-        "description": description,
-        "subjects": subjects,
-        "identifiers": identifiers,
-        "opf_path": opf_path,
-        "manifest": mf_items,
-        "spine": spine
-    }
-
-def parse_date(date_raw: str) -> Optional[str]:
-    if not date_raw:
-        return None
-    fmts = ["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m", "%Y"]
-    for fmt in fmts:
-        try:
-            dt = datetime.strptime(date_raw[:len(fmt)], fmt)
-            return dt.date().isoformat()
-        except Exception:
-            continue
-    return None
-
-# ---------------- DB ops ----------------
-
-def upsert_author(cur, name: str) -> int:
-    cur.execute(
-        "INSERT INTO authors (name) VALUES (%s) "
-        "ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name "
-        "RETURNING id",
-        (name,),
-    )
-    return cur.fetchone()[0]
-
-def find_or_insert_book(cur, meta, subjects_list: List[str]) -> int:
-    # 1) искать по идентификаторам
-    for scheme, value in meta["identifiers"]:
-        cur.execute("SELECT book_id FROM book_identifiers WHERE scheme=%s AND value=%s", (scheme, value))
-        row = cur.fetchone()
-        if row:
-            return row[0]
-    # 2) иначе создать
-    cur.execute(
-        """
-        INSERT INTO books (title, sort_title, lang, description, publisher, pub_date, subjects, series, meta)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        RETURNING id
-        """,
-        (
-            meta["title"],
-            meta["title"],
-            meta["language"],
-            meta["description"],
-            meta["publisher"],
-            parse_date(meta["date_raw"]),
-            subjects_list if subjects_list else None,
-            None,
-            json.dumps({"identifiers": meta["identifiers"], "opf_path": meta["opf_path"]}, ensure_ascii=False),
-        ),
-    )
-    book_id = cur.fetchone()[0]
-    # авторы
-    for i, raw in enumerate(meta["creators"]):
-        aid = upsert_author(cur, raw)
-        cur.execute(
-            "INSERT INTO book_authors (book_id, author_id, role, ord) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            (book_id, aid, "author", i),
-        )
-    # идентификаторы
-    for scheme, value in meta["identifiers"]:
-        cur.execute(
-            "INSERT INTO book_identifiers (book_id, scheme, value) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
-            (book_id, scheme, value),
-        )
-    return book_id
-
-def insert_or_get_edition(cur, book_id: int, storage_key: str, size_bytes: int, sha256: str, opf_path: str) -> Optional[int]:
-    cur.execute("SELECT id FROM editions WHERE sha256=%s", (sha256,))
-    row = cur.fetchone()
-    if row:
-        return row[0]
-    cur.execute(
-        """
-        INSERT INTO editions (book_id, format, storage_key, size_bytes, sha256, drm, opf_path)
-        VALUES (%s,'EPUB',%s,%s,%s,false,%s) RETURNING id
-        """,
-        (book_id, storage_key, size_bytes, sha256, opf_path),
-    )
-    return cur.fetchone()[0]
-
-def insert_chapter(cur, edition_id: int, ord_: int, title: Optional[str], href: str) -> int:
-    cur.execute(
-        """
-        INSERT INTO edition_chapters (edition_id, ord, title, href)
-        VALUES (%s,%s,%s,%s) RETURNING id
-        """,
-        (edition_id, ord_, title or None, href),
-    )
-    return cur.fetchone()[0]
-
-def insert_chunk_meta(cur, book_id: int, edition_id: int, chapter_id: Optional[int], ord_: int,
-                      words_from: int, words_to: int, es_index: str, es_doc_id: str, lang: Optional[str]):
+def insert_paragraph_meta(cur, book_id: int, edition_id: int, chapter_id: Optional[int],
+                          para_start: int, para_end: int, window_size: int,
+                          tokens_from: int, tokens_to: int,
+                          es_index: str, es_doc_id: str, lang: Optional[str],
+                          para_type: Optional[str], is_heading: Optional[bool]):
     cur.execute("""
-        INSERT INTO content_chunks (book_id, edition_id, chapter_id, ord, words_from, words_to, es_index, es_doc_id, lang)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        INSERT INTO content_paragraphs
+          (book_id, edition_id, chapter_id, para_start, para_end, window_size,
+           tokens_from, tokens_to, es_index, es_doc_id, lang, para_type, is_heading)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (es_doc_id) DO NOTHING
-    """, (book_id, edition_id, chapter_id, ord_, words_from, words_to, es_index, es_doc_id, lang))
+    """, (book_id, edition_id, chapter_id, para_start, para_end, window_size,
+          tokens_from, tokens_to, es_index, es_doc_id, lang, para_type, is_heading))
 
-# ---------------- Elasticsearch ----------------
+# ---------------- ES ----------------
 
 def es_request(method: str, url: str, json_body=None, timeout=30):
     r = requests.request(method, url, json=json_body, timeout=timeout)
@@ -428,15 +327,6 @@ def ensure_es_indices(es_url: str, idx_meta: str, idx_content: str,
                       use_templates: bool = True,
                       dense_vec_dim: int = 0,
                       enable_suggest: bool = False):
-    """
-    Создаёт index templates (или индексы) с анализаторами и multi-fields:
-      - analyzers: quote (без стемминга), ru, en
-      - keyword с lower normalizer (kw_lower)
-      - title/author_names/subjects/description: raw/ru/en
-      - content: ru/en + term_vector
-      - (опц.) completion suggest
-      - (опц.) dense_vector для kNN в ES
-    """
     analysis = {
         "char_filter": {
             "punct_strip": {"type": "pattern_replace",
@@ -513,7 +403,7 @@ def ensure_es_indices(es_url: str, idx_meta: str, idx_content: str,
             "chapter_ord": {"type": "integer"},
             "chapter_href":{"type": "keyword"},
             "lang":        {"type": "keyword", "normalizer": "kw_lower"},
-            "title":       {
+            "title": {
                 "type": "text", "analyzer": "quote",
                 "fields": {
                     "raw": {"type": "keyword", "normalizer": "kw_lower"},
@@ -529,7 +419,12 @@ def ensure_es_indices(es_url: str, idx_meta: str, idx_content: str,
                     "en": {"type": "text", "analyzer": "en"}
                 }
             },
-            "length": {"type": "integer"}
+            "length":      {"type": "integer"},
+            "para_start":  {"type": "integer"},
+            "para_end":    {"type": "integer"},
+            "window_size": {"type": "integer"},
+            "is_heading":  {"type": "boolean"},
+            "para_type":   {"type": "keyword"}
         }
         if dense_vec_dim and dense_vec_dim > 0:
             props["content_vec"] = {
@@ -541,18 +436,12 @@ def ensure_es_indices(es_url: str, idx_meta: str, idx_content: str,
     if use_templates:
         tmpl_meta = {
             "index_patterns": ["books_meta*"],
-            "template": {
-                "settings": {"analysis": analysis},
-                "mappings": meta_mappings()
-            },
+            "template": {"settings": {"analysis": analysis}, "mappings": meta_mappings()},
             "priority": 10
         }
         tmpl_content = {
             "index_patterns": ["books_content*"],
-            "template": {
-                "settings": {"analysis": analysis},
-                "mappings": content_mappings()
-            },
+            "template": {"settings": {"analysis": analysis}, "mappings": content_mappings()},
             "priority": 10
         }
         es_request("PUT", f"{es_url}/_index_template/books_meta_template", tmpl_meta)
@@ -567,15 +456,13 @@ def ensure_es_indices(es_url: str, idx_meta: str, idx_content: str,
             raise RuntimeError(f"ES check index {name} failed: {r.status_code} {r.text[:500]}")
 
 def es_bulk(es_url: str, index: str, docs: List[Dict], id_field: Optional[str] = None, chunk_size: int = 2000):
-    """Bulk индексирование. ВАЖНО: _id НЕ попадает в _source, только в meta-строку."""
     import gzip
-
     def gen_actions(batch):
         lines = []
         for d in batch:
             if id_field and id_field in d:
                 _id = d[id_field]
-                src = {k: v for k, v in d.items() if k != id_field}  # НЕ отправлять _id в source
+                src = {k: v for k, v in d.items() if k != id_field}
                 meta = {"index": {"_index": index, "_id": _id}}
             else:
                 src = d
@@ -583,7 +470,6 @@ def es_bulk(es_url: str, index: str, docs: List[Dict], id_field: Optional[str] =
             lines.append(json.dumps(meta, ensure_ascii=False))
             lines.append(json.dumps(src, ensure_ascii=False))
         return ("\n".join(lines) + "\n").encode("utf-8")
-
     for i in range(0, len(docs), chunk_size):
         batch = docs[i:i + chunk_size]
         data = gen_actions(batch)
@@ -592,10 +478,167 @@ def es_bulk(es_url: str, index: str, docs: List[Dict], id_field: Optional[str] =
         if r.status_code >= 400 or '"errors":true' in r.text:
             raise RuntimeError(f"ES bulk failed: {r.status_code} {r.text[:1000]}")
 
-# ---------------- main ingestion ----------------
+# ---------------- EPUB -> DB+ES ----------------
 
-def process_epub(conn, file_path: Path, args,
-                 es_url: Optional[str], idx_meta: str, idx_content: str):
+def parse_container_and_opf(z: zipfile.ZipFile) -> str:
+    container_xml = z.read("META-INF/container.xml")
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(container_xml)
+    ns = {"c": "urn:oasis:names:tc:opendocument:xmlns:container"}
+    rf = root.find(".//c:rootfile", ns)
+    if rf is None:
+        raise RuntimeError("rootfile not found in container.xml")
+    return rf.attrib.get("full-path", "")
+
+def parse_opf(z: zipfile.ZipFile, opf_path: str):
+    import xml.etree.ElementTree as ET
+    opf_xml = z.read(opf_path)
+    opf = ET.fromstring(opf_xml)
+    ns = {"dc": "http://purl.org/dc/elements/1.1/",
+          "opf": "http://www.idpf.org/2007/opf"}
+
+    # Берём ПЕРВЫЙ непустой dc:title (иногда их несколько)
+    titles = [norm_space(el.text) for el in opf.findall(".//dc:title", ns) if el is not None and norm_space(el.text)]
+    title = titles[0] if titles else None
+
+    def get_text(path):
+        el = opf.find(path, ns)
+        return norm_space(el.text) if el is not None and el.text else ""
+
+    language = (get_text(".//dc:language") or None)
+    publisher = get_text(".//dc:publisher") or None
+    date_raw = get_text(".//dc:date") or ""
+    description = get_text(".//dc:description") or None
+    creators = [norm_space(el.text) for el in opf.findall(".//dc:creator", ns) if el is not None and norm_space(el.text)]
+    subjects = [norm_space(s.text) for s in opf.findall(".//dc:subject", ns) if s is not None and norm_space(s.text)]
+    identifiers = []
+    for ide in opf.findall(".//dc:identifier", ns):
+        txt = norm_space(ide.text) if ide is not None and ide.text else ""
+        if txt:
+            scheme = ide.attrib.get("{http://www.idpf.org/2007/opf}scheme", "") or ""
+            identifiers.append(((scheme.upper() or "ID"), txt))
+
+    mf_items = {}
+    base = str(Path(opf_path).parent)
+    for it in opf.findall(".//{http://www.idpf.org/2007/opf}item"):
+        it_id = it.attrib.get("id")
+        href = it.attrib.get("href")
+        media_type = it.attrib.get("media-type")
+        if it_id and href:
+            href_path = str(Path(base) / href) if base not in ("", ".") else href
+            mf_items[it_id] = (href_path, media_type)
+
+    spine = []
+    for itref in opf.findall(".//{http://www.idpf.org/2007/opf}itemref"):
+        ref = itref.attrib.get("idref")
+        if ref and ref in mf_items:
+            spine.append(mf_items[ref])
+
+    return {
+        "title": title, "creators": creators, "language": language, "publisher": publisher,
+        "date_raw": date_raw, "description": description, "subjects": subjects,
+        "identifiers": identifiers, "opf_path": opf_path, "manifest": mf_items, "spine": spine
+    }
+
+def parse_date(date_raw: str) -> Optional[str]:
+    if not date_raw:
+        return None
+    fmts = ["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m", "%Y"]
+    for fmt in fmts:
+        try:
+            dt = datetime.strptime(date_raw[:len(fmt)], fmt)
+            return dt.date().isoformat()
+        except Exception:
+            continue
+    return None
+
+def upsert_author(cur, name: str) -> int:
+    cur.execute(
+        "INSERT INTO authors (name) VALUES (%s) "
+        "ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name "
+        "RETURNING id",
+        (name,),
+    )
+    return cur.fetchone()[0]
+
+def find_or_insert_book(cur, meta, subjects_list: List[str]) -> int:
+    for scheme, value in meta["identifiers"]:
+        cur.execute("SELECT book_id FROM book_identifiers WHERE scheme=%s AND value=%s", (scheme, value))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+    cur.execute(
+        """
+        INSERT INTO books (title, sort_title, lang, description, publisher, pub_date, subjects, series, meta)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        RETURNING id
+        """,
+        (
+            meta["title"], meta["title"], meta["language"], meta["description"], meta["publisher"],
+            parse_date(meta["date_raw"]), subjects_list if subjects_list else None, None,
+            json.dumps({"identifiers": meta["identifiers"], "opf_path": meta["opf_path"]}, ensure_ascii=False),
+        ),
+    )
+    book_id = cur.fetchone()[0]
+    for i, raw in enumerate(meta["creators"]):
+        aid = upsert_author(cur, raw)
+        cur.execute(
+            "INSERT INTO book_authors (book_id, author_id, role, ord) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+            (book_id, aid, "author", i),
+        )
+    for scheme, value in meta["identifiers"]:
+        cur.execute(
+            "INSERT INTO book_identifiers (book_id, scheme, value) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+            (book_id, scheme, value),
+        )
+    return book_id
+
+def insert_or_get_edition(cur, book_id: int, storage_key: str, size_bytes: int, sha256: str, opf_path: str) -> Optional[int]:
+    cur.execute("SELECT id FROM editions WHERE sha256=%s", (sha256,))
+    row = cur.fetchone()
+    if row:
+        return row[0]
+    cur.execute(
+        """
+        INSERT INTO editions (book_id, format, storage_key, size_bytes, sha256, drm, opf_path)
+        VALUES (%s,'EPUB',%s,%s,%s,false,%s) RETURNING id
+        """,
+        (book_id, storage_key, size_bytes, sha256, opf_path),
+    )
+    return cur.fetchone()[0]
+
+def insert_chapter(cur, edition_id: int, ord_: int, title: Optional[str], href: str) -> int:
+    cur.execute(
+        """
+        INSERT INTO edition_chapters (edition_id, ord, title, href)
+        VALUES (%s,%s,%s,%s) RETURNING id
+        """,
+        (edition_id, ord_, title or None, href),
+    )
+    return cur.fetchone()[0]
+
+def es_bulk_safe(es_url: str, idx_meta: str, idx_content: str, meta_doc: Dict, content_docs: List[Dict]):
+    # meta
+    if meta_doc:
+        try:
+            es_bulk(es_url, idx_meta, [meta_doc], id_field="book_id", chunk_size=1)
+        except Exception as e:
+            print(f"[WARN] ES meta bulk failed for book {meta_doc.get('book_id')}: {e}", file=sys.stderr)
+    # content
+    if content_docs:
+        try:
+            es_bulk(es_url, idx_content, content_docs, id_field="_id", chunk_size=1000)
+        except Exception as e:
+            print(f"[WARN] ES content bulk failed: {e}", file=sys.stderr)
+
+def _fallback_book_title(file_path: Path, meta_title: Optional[str]) -> str:
+    """Тихий запасной вариант, если в OPF нет dc:title."""
+    if meta_title and meta_title.strip():
+        return meta_title
+    # как крайняя мера — имя файла без расширения
+    return Path(file_path).stem
+
+def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: str, idx_content: str):
     size_bytes = file_path.stat().st_size
     sha = sha256_file(file_path)
 
@@ -608,32 +651,29 @@ def process_epub(conn, file_path: Path, args,
             print(f"[WARN] {file_path.name}: OPF parse failed: {e}", file=sys.stderr)
             return
 
-        # 2) Книга + издание
+        # 2) книга + издание
         book_id = find_or_insert_book(cur, meta, meta["subjects"])
         edition_id = insert_or_get_edition(cur, book_id, str(file_path), size_bytes, sha, meta["opf_path"])
         if not edition_id:
             conn.commit()
             return
 
-        # 3) Главы (href/title/ord), без текста
+        # 3) главы (href/title/ord), без текста
         chapter_ids: List[Optional[int]] = []
         for idx, (href, media_type) in enumerate(meta["spine"], start=1):
             if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
                 chapter_ids.append(None)
                 continue
-            # заголовок главы
             chap_title = None
             try:
                 raw = z.read(href)
             except KeyError:
                 alt = str(Path(Path(meta["opf_path"]).parent) / href)
                 try:
-                    raw = z.read(alt)
-                    href = alt
+                    raw = z.read(alt); href = alt
                 except KeyError:
                     print(f"[WARN] missing spine resource {href}", file=sys.stderr)
-                    chapter_ids.append(None)
-                    continue
+                    chapter_ids.append(None); continue
             try:
                 html = raw.decode("utf-8", errors="ignore")
                 soup = BeautifulSoup(html, "lxml")
@@ -641,11 +681,11 @@ def process_epub(conn, file_path: Path, args,
                 chap_title = norm_space(h.get_text()) if h else None
             except Exception:
                 pass
-
             cid = insert_chapter(cur, edition_id, idx, chap_title, href)
             chapter_ids.append(cid)
 
-        # 4) ES: мета-документ книги
+        # 4) ES: метадок книги
+        book_title_for_es = _fallback_book_title(file_path, meta.get("title"))
         if not args.no_es:
             authors = meta["creators"]
             pub_year = None
@@ -653,12 +693,11 @@ def process_epub(conn, file_path: Path, args,
             if pd:
                 try:
                     pub_year = int(pd[:4])
-                except Exception:
+                except:
                     pub_year = None
-
             meta_doc = {
                 "book_id": str(book_id),
-                "title": meta["title"] or "",
+                "title": book_title_for_es,
                 "author_names": authors or [],
                 "subjects": meta["subjects"] or [],
                 "publisher": meta["publisher"] or "",
@@ -666,20 +705,12 @@ def process_epub(conn, file_path: Path, args,
                 "pub_year": pub_year,
                 "description": meta["description"] or ""
             }
-            if args.es_enable_suggest:
-                meta_doc["title_suggest"]  = meta_doc["title"]
-                meta_doc["author_suggest"] = authors or []
+        else:
+            meta_doc = {}
 
-            # meta индексируем сразу; если упадёт — это не критично для БД
-            try:
-                es_bulk(es_url, idx_meta, [meta_doc], id_field="book_id", chunk_size=1)
-            except Exception as e:
-                print(f"[WARN] ES meta bulk failed for book {book_id}: {e}", file=sys.stderr)
-
-        # 5) ES: контент для цитат (только в ES)
-        content_docs = []
-        words_running = 0
-        chunk_ord = 0
+        # 5) ES: контент абзацами/окнами
+        content_docs: List[Dict] = []
+        words_running = 0  # глобальный счётчик слов по книге/изданию
 
         for c_idx, (href, media_type) in enumerate(meta["spine"], start=1):
             if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
@@ -689,102 +720,127 @@ def process_epub(conn, file_path: Path, args,
             except KeyError:
                 alt = str(Path(Path(meta["opf_path"]).parent) / href)
                 try:
-                    raw = z.read(alt)
-                    href = alt
+                    raw = z.read(alt); href = alt
                 except KeyError:
                     print(f"[WARN] missing spine resource {href}", file=sys.stderr)
                     continue
 
             html = raw.decode("utf-8", errors="ignore")
-            text = html_to_text(html)
-            words = tokenize_words(text)
-            chunks = chunk_words(words, args.chunk_words, args.chunk_overlap) if words else []
-
             chapter_id = chapter_ids[c_idx - 1]
-            chap_title = None
-            if chapter_id:
-                cur.execute("SELECT title FROM edition_chapters WHERE id=%s", (chapter_id,))
-                row = cur.fetchone()
-                chap_title = row[0] if row else None
 
-            for w_from, w_to, ch in chunks:
-                chunk_text = " ".join(ch).strip()
-                if not chunk_text:
+            blocks = html_to_paragraph_blocks(html)
+            if args.join_short_paragraphs:
+                blocks = coalesce_short_paragraphs(blocks, args.min_paragraph_words)
+
+            # токены по абзацам и префиксные суммы внутри главы
+            para_token_counts = [len(tokenize_words(txt)) for kind, txt in blocks]
+            prefix = [0]
+            for c in para_token_counts:
+                prefix.append(prefix[-1] + c)
+
+            wins = paragraph_windows(blocks, args.para_window_size, args.para_window_stride)
+
+            base_offset = words_running
+            for (start, end, win_blocks) in wins:
+                win_texts = [t for _, t in win_blocks]
+                win_kinds = [k for k, _ in win_blocks]
+                para_text = "\n\n".join(win_texts)
+                if not para_text.strip():
                     continue
-                doc_id = f"{edition_id}:{c_idx}:{chunk_ord}"
+
+                is_head = any(k == "heading" for k in win_kinds)
+                kind_first = win_kinds[0] if win_kinds else "paragraph"
+
+                w_from = base_offset + prefix[start]
+                w_to   = base_offset + prefix[end + 1]
+
+                doc_id = f"{edition_id}:{c_idx}:{start}"
+
+                # ВАЖНО: title = ТОЛЬКО НАЗВАНИЕ КНИГИ ИЗ OPF
                 content_docs.append({
-                    "_id": doc_id,  # meta в bulk, ИСКЛЮЧАЕТСЯ из _source в es_bulk()
+                    "_id": doc_id,
                     "book_id": str(book_id),
                     "edition_id": str(edition_id),
                     "chapter_ord": c_idx,
                     "chapter_href": href,
                     "lang": meta["language"] or "",
-                    "title": chap_title or meta["title"] or "",
-                    "content": chunk_text,
-                    "length": len(chunk_text)
+                    "title": book_title_for_es,
+                    "content": para_text,
+                    "length": len(para_text),
+                    "para_start": start,
+                    "para_end": end,
+                    "window_size": end - start + 1,
+                    "is_heading": is_head,
+                    "para_type": kind_first
                 })
-                insert_chunk_meta(cur, book_id, edition_id, chapter_id, chunk_ord,
-                                  words_running + w_from, words_running + w_to,
-                                  idx_content, doc_id, meta["language"] or None)
-                chunk_ord += 1
 
-            words_running += len(words)
+                insert_paragraph_meta(
+                    cur, book_id, edition_id, chapter_id,
+                    start, end, end - start + 1,
+                    w_from, w_to,
+                    idx_content, doc_id, meta["language"] or None,
+                    para_type=kind_first, is_heading=is_head
+                )
 
-        # ---- ВАЖНО ----
-        # Сначала фиксируем метаданные в БД, чтобы content_chunks не пустел из-за ошибок ES:
+            # после главы двигаем глобальный счётчик слов на общее число слов в главе
+            words_running += prefix[-1]
+
+        # 6) коммиты + ES bulk
         conn.commit()
-
-        # Теперь bulk в ES. Ошибки не валят транзакцию БД.
-        if not args.no_es and content_docs:
-            try:
-                es_bulk(es_url, idx_content, content_docs, id_field="_id", chunk_size=1000)
-            except Exception as e:
-                print(f"[WARN] ES content bulk failed for edition {edition_id}: {e}", file=sys.stderr)
-
-        # финальный коммит (на случай, если ES был выключен)
+        if not args.no_es:
+            es_bulk_safe(args.es_url, idx_meta, idx_content, meta_doc, content_docs)
         conn.commit()
 
 def main():
-    ap = argparse.ArgumentParser(description="Build PostgreSQL DB for EPUB library + Elasticsearch indices (no book text in DB).")
+    ap = argparse.ArgumentParser(description="EPUB -> Postgres (meta) + Elasticsearch (paragraphs).")
     ap.add_argument("--dsn", required=True, help="PostgreSQL DSN (e.g., postgresql://user:pass@host:5432/db)")
     ap.add_argument("--root", required=True, help="Root folder with .epub files (recursively)")
-    ap.add_argument("--create-db", action="store_true", help="Create database from DSN if not exists")
-    ap.add_argument("--recreate-schema", action="store_true", help="Drop and recreate schema objects")
+    ap.add_argument("--create-db", action="store_true")
+    ap.add_argument("--recreate-schema", action="store_true")
 
     # ES
-    ap.add_argument("--no-es", action="store_true", help="Skip Elasticsearch indexing")
-    ap.add_argument("--es-url", type=str, default="http://localhost:9200", help="Elasticsearch base URL")
-    ap.add_argument("--es-index-meta", type=str, default="books_meta", help="Index for book metadata")
-    ap.add_argument("--es-index-content", type=str, default="books_content", help="Index for book content/quotes")
-    ap.add_argument("--es-no-source", action="store_true", help="Disable _source in content index (saves space, but no ES-side highlights)")
-    ap.add_argument("--es-use-templates", action="store_true", help="Create index templates and indices from them (recommended)")
-    ap.add_argument("--es-dense-vector-dim", type=int, default=0, help=">0 to add dense_vector 'content_vec' in books_content")
-    ap.add_argument("--es-enable-suggest", action="store_true", help="Add completion suggest for title/author_names")
+    ap.add_argument("--no-es", action="store_true")
+    ap.add_argument("--es-url", type=str, default="http://localhost:9200")
+    ap.add_argument("--es-index-meta", type=str, default="books_meta")
+    ap.add_argument("--es-index-content", type=str, default="books_content")
+    ap.add_argument("--es-no-source", action="store_true", help="Disable _source in content index")
+    ap.add_argument("--es-use-templates", action="store_true", help="Create index templates")
+    ap.add_argument("--es-dense-vector-dim", type=int, default=0)
+    ap.add_argument("--es-enable-suggest", action="store_true")
 
-    # Чанкинг
-    ap.add_argument("--chunk-words", type=int, default=800, help="Words per chunk (default: 800)")
-    ap.add_argument("--chunk-overlap", type=int, default=80, help="Word overlap between chunks (default: 80)")
+    # Абзацы и окна
+    ap.add_argument("--min-paragraph-words", type=int, default=15)
+    ap.add_argument("--join-short-paragraphs", action="store_true")
+    ap.add_argument("--para-window-size", type=int, default=1, help=">=1 (1 = без перекрытий)")
+    ap.add_argument("--para-window-stride", type=int, default=1, help=">=1 (1 = максимальное перекрытие)")
 
     # Векторная готовность (Postgres)
-    ap.add_argument("--with-pgvector", action="store_true", help="Enable pgvector and add VECTOR(dim) column for embeddings")
-    ap.add_argument("--vector-dim", type=int, default=768, help="VECTOR(dim) dimension (default: 768)")
+    ap.add_argument("--with-pgvector", action="store_true")
+    ap.add_argument("--vector-dim", type=int, default=768)
 
-    ap.add_argument("--limit", type=int, default=0, help="Limit number of EPUB files to import (for testing)")
+    ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
 
     if args.create_db:
         ensure_database(args.dsn)
 
     conn = connect(args.dsn)
-
     try:
         if args.recreate_schema:
             drop_schema(conn)
         apply_schema(conn)
+        if args.with_pgvector:  # NOTE: typo fix ниже
+            pass
+    except Exception:
+        pass
+    # fix typo из блока выше:
+    try:
         if args.with_pgvector:
             enable_pgvector(conn, args.vector_dim)
+    except Exception as e:
+        print(f"[WARN] pgvector setup: {e}", file=sys.stderr)
 
-        # ES индексы
+    try:
         if not args.no_es:
             ensure_es_indices(
                 args.es_url, args.es_index_meta, args.es_index_content,
@@ -794,7 +850,6 @@ def main():
                 enable_suggest=args.es_enable_suggest
             )
 
-        # Файлы
         root = Path(args.root).expanduser()
         files = sorted([p for p in root.rglob("*.epub")])
         if args.limit > 0:
@@ -809,7 +864,6 @@ def main():
             except Exception as e:
                 conn.rollback()
                 print(f"[ERROR] {p.name}: {e}", file=sys.stderr)
-
     finally:
         conn.close()
 

@@ -4,7 +4,6 @@ from typing import Optional, List, Dict, Any
 import requests
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,7 +21,6 @@ session.headers.update({"Content-Type": "application/json"})
 
 app = FastAPI(title="Books Search API (ES)")
 
-# CORS на всякий случай (для браузера). В Postman не обязателен.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
@@ -48,7 +46,7 @@ def health():
         raise HTTPException(503, f"ES not reachable: {e}")
     return {"ok": True, "es": info.get("version", {})}
 
-# ---------- Поиск по метаданным книги ----------
+# ---------- Поиск по метаданным ----------
 @app.get("/books/search")
 def search_books(
     q: Optional[str] = Query(None, description="Запрос (название/автор/жанр/описание)"),
@@ -94,12 +92,7 @@ def search_books(
 
     body = {
         "from": offset, "size": size,
-        "query": {
-            "bool": {
-                "must": must or [{"match_all": {}}],
-                "filter": filters
-            }
-        },
+        "query": {"bool": {"must": must or [{"match_all": {}}], "filter": filters}},
         "_source": True
     }
     res = es_post(f"{IDX_META}/_search", body)
@@ -154,20 +147,23 @@ def search_quotes(
             "chapter_ord": src.get("chapter_ord"),
             "chapter_href": src.get("chapter_href"),
             "title": src.get("title"),
+            "lang": src.get("lang"),
+            "para_start": src.get("para_start"),
+            "para_end": src.get("para_end"),
+            "window_size": src.get("window_size"),
+            "is_heading": src.get("is_heading"),
+            "para_type": src.get("para_type"),
             "snippet": highlight[0] if highlight else None
         })
     return {"total": res.get("hits", {}).get("total", {}).get("value", 0), "hits": hits}
 
-# ---------- Суггест (если включили completion в индексе) ----------
+# ---------- Суггест ----------
 @app.get("/suggest")
 def suggest(prefix: str, field: str = Query("title", pattern="^(title|author)$"), size: int = 5):
     suggest_field = "title_suggest" if field == "title" else "author_suggest"
     body = {
         "suggest": {
-            "s1": {
-                "prefix": prefix,
-                "completion": {"field": suggest_field, "size": size}
-            }
+            "s1": {"prefix": prefix, "completion": {"field": suggest_field, "size": size}}
         }
     }
     res = es_post(f"{IDX_META}/_search", body)
