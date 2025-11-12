@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-build_library_db.py — EPUB -> PostgreSQL (метаданные) + Elasticsearch (текст по абзацам + эмбеддинги).
-ТЕКСТ книг в Postgres НЕ хранится. Текст только в ES.
-"""
-
 import argparse
 import hashlib
 import json
@@ -23,15 +16,9 @@ import warnings
 from tqdm import tqdm
 import unicodedata
 
-# === опциональные импорты для эмбеддингов ===
-try:
-    import torch
-except Exception:
-    torch = None
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:
-    SentenceTransformer = None
+import torch
+from sentence_transformers import SentenceTransformer
+
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
@@ -40,7 +27,7 @@ warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 
 SCHEMA_SQL = """
--- === базовая схема Postgres (БЕЗ текста книг) ===
+-- === базовая схема Postgres ===
 
 CREATE TABLE IF NOT EXISTS authors (
   id        BIGSERIAL PRIMARY KEY,
@@ -89,7 +76,7 @@ CREATE TABLE IF NOT EXISTS editions (
   created_at  TIMESTAMPTZ DEFAULT now()
 );
 
--- Оглавление/главы (без текста)
+-- Оглавление/главы
 CREATE TABLE IF NOT EXISTS edition_chapters (
   id          BIGSERIAL PRIMARY KEY,
   edition_id  BIGINT REFERENCES editions(id) ON DELETE CASCADE,
@@ -98,7 +85,7 @@ CREATE TABLE IF NOT EXISTS edition_chapters (
   href        TEXT
 );
 
--- Метаданные АБЗАЦЕВ/окон (без текста)
+-- Метаданные АБЗАЦЕВ/окон
 CREATE TABLE IF NOT EXISTS content_paragraphs (
   id           BIGSERIAL PRIMARY KEY,
   book_id      BIGINT REFERENCES books(id) ON DELETE CASCADE,
@@ -112,7 +99,6 @@ CREATE TABLE IF NOT EXISTS content_paragraphs (
   es_index     TEXT,
   es_doc_id    TEXT UNIQUE,
   lang         TEXT,
-  embedding    TEXT,
   para_type    TEXT,
   is_heading   BOOLEAN
 );
@@ -317,33 +303,6 @@ def apply_schema(conn):
         cur.execute(SCHEMA_SQL)
     conn.commit()
 
-def enable_pgvector(conn, vector_dim: int):
-    prev = conn.autocommit
-    conn.autocommit = True
-    try:
-        with conn.cursor() as cur:
-            try:
-                cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            except Exception as e:
-                print(f"[WARN] EXT vector: {e}", file=sys.stderr)
-    finally:
-        conn.autocommit = prev
-
-    with conn.cursor() as cur:
-        cur.execute("""
-            DO $$
-            BEGIN
-              IF EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name='content_paragraphs' AND column_name='embedding' AND data_type='text'
-              ) THEN
-                ALTER TABLE content_paragraphs DROP COLUMN embedding;
-                ALTER TABLE content_paragraphs ADD COLUMN embedding VECTOR(%s);
-              END IF;
-            END$$;
-        """, (int(vector_dim),))
-    conn.commit()
-
 def insert_paragraph_meta(cur, book_id: int, edition_id: int, chapter_id: Optional[int],
                           para_start: int, para_end: int, window_size: int,
                           tokens_from: int, tokens_to: int,
@@ -503,7 +462,7 @@ def es_bulk(es_url: str, index: str, docs: List[Dict], id_field: Optional[str] =
         if r.status_code >= 400 or '"errors":true' in r.text:
             raise RuntimeError(f"ES bulk failed: {r.status_code} {r.text[:1000]}")
 
-# ---------------- EPUB -> DB+ES (+ embeddings) ----------------
+# ---------------- EPUB -> DB+ES+ embeddings ----------------
 
 def parse_container_and_opf(z: zipfile.ZipFile) -> str:
     container_xml = z.read("META-INF/container.xml")
@@ -618,12 +577,10 @@ def find_or_insert_book(cur, meta, subjects_list: List[str]) -> int:
     return book_id
 
 def insert_or_get_edition(cur, book_id: int, storage_key: str, size_bytes: int, sha256: str, opf_path: str) -> Optional[int]:
-    # Если издание с таким SHA256 уже есть — возвращаем id
     cur.execute("SELECT id FROM editions WHERE sha256=%s", (sha256,))
     row = cur.fetchone()
     if row:
         return row[0]
-    # Иначе создаём новое издание
     cur.execute(
         """
         INSERT INTO editions (book_id, format, storage_key, size_bytes, sha256, drm, opf_path)
@@ -684,7 +641,7 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
             conn.commit()
             return "ok"
 
-        # 3) главы (href/title/ord) — короткий проход (не критично, если что-то отсутствует)
+        # 3) главы
         chapter_ids: List[Optional[int]] = []
         for idx, (href, media_type) in enumerate(meta["spine"], start=1):
             if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
@@ -734,7 +691,7 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
         else:
             meta_doc = {}
 
-        # 5) ES: контент абзацами/окнами (+ возможное дробление и эмбеддинги)
+        # 5) ES: контент абзацами/окнами + возможное дробление и эмбеддинги
         content_docs: List[Dict] = []
         texts_for_embed: List[str] = []
         words_running = 0
@@ -792,7 +749,6 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
 
                 base_doc_id = f"{edition_id}:{c_idx}:{start}"
 
-                # дробление на под-чанки для эмбеддингов и поиска
                 subtexts = [para_text]
                 if args.embed_model and args.embed_max_words > 0:
                     subtexts = split_by_words(para_text, args.embed_max_words, args.embed_overlap_words)
@@ -832,12 +788,10 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
         if missing > 0:
             print(f"[WARN] missing spine resources total: {missing} (file: {file_path.name})", file=sys.stderr)
 
-        # 6) эмбеддинги (если включены)
+        # 6) эмбеддинги
         if args.embed_model:
             enc, enc_dim, enc_dev = get_encoder(args.embed_model, device_mode=args.embed_device)
-            # Если маппинг не задан — подстроим под размер модели
             if args.es_dense_vector_dim <= 0:
-                # Пере-создадим индекс с нужным content_vec (через шаблон/алис не трогаем существующий)
                 ensure_es_indices(args.es_url, idx_meta, idx_content,
                                   store_source=not args.es_no_source,
                                   use_templates=args.es_use_templates,
@@ -854,7 +808,6 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
                 embs = enc.encode(chunk, normalize_embeddings=bool(args.embed_normalize), convert_to_numpy=True)
                 vecs.extend(embs.tolist())
 
-            # проставим в документы
             vi = 0
             for d in content_docs:
                 if args.embed_model:
@@ -880,6 +833,8 @@ def main():
     ap.add_argument("--es-url", type=str, default="http://localhost:9200")
     ap.add_argument("--es-index-meta", type=str, default="books_meta")
     ap.add_argument("--es-index-content", type=str, default="books_content")
+    ap.add_argument("--recreate-es", action="store_true",
+                    help = "Полностью удалить индексы ES (--es-index-meta и --es-index-content) перед созданием")
     ap.add_argument("--es-no-source", action="store_true", help="Disable _source in content index")
     ap.add_argument("--es-use-templates", action="store_true", help="Create index templates")
     ap.add_argument("--es-dense-vector-dim", type=int, default=0,
@@ -893,11 +848,7 @@ def main():
     ap.add_argument("--para-window-size", type=int, default=1, help=">=1 (1 = без перекрытий)")
     ap.add_argument("--para-window-stride", type=int, default=1, help=">=1 (1 = максимальное перекрытие)")
 
-    # Векторная готовность (Postgres)
-    ap.add_argument("--with-pgvector", action="store_true")
-    ap.add_argument("--vector-dim", type=int, default=768)
-
-    # Новые флаги для контроля «битых» EPUB и шума в логах
+    # Флаги для контроля битых EPUB
     ap.add_argument("--max-missing-spine", type=int, default=50,
                     help="Сколько отсутствующих ресурсов в spine допускаем, прежде чем пропустить EPUB")
     ap.add_argument("--warn-cap", type=int, default=5,
@@ -927,21 +878,21 @@ def main():
         if args.recreate_schema:
             drop_schema(conn)
         apply_schema(conn)
-        if args.with_pgvector:
-            pass
     except Exception:
         pass
-    try:
-        if args.with_pgvector:
-            enable_pgvector(conn, args.vector_dim)
-    except Exception as e:
-        print(f"[WARN] pgvector setup: {e}", file=sys.stderr)
 
     skipped_epubs: List[str] = []
 
     try:
         if not args.no_es:
-            # если размер вектора не задан и будет модель — подстроим позже, но для базового маппинга ок
+            if args.recreate_es:
+                for name in (args.es_index_meta, args.es_index_content):
+                    try:
+                        r = requests.delete(f"{args.es_url}/{name}", timeout=30)
+                        if r.status_code not in (200, 202, 404):
+                            print(f"[WARN] ES delete {name}: {r.status_code} {r.text[:200]}", file=sys.stderr)
+                    except Exception as e:
+                        print(f"[WARN] ES delete {name} failed: {e}", file=sys.stderr)
             ensure_es_indices(
                 args.es_url, args.es_index_meta, args.es_index_content,
                 store_source=not args.es_no_source,

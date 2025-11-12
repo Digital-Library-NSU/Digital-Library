@@ -7,9 +7,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 import psycopg2
-from psycopg2.extras import execute_values
-
-# ==== NEW: sentence-transformers для семантики ====
 try:
     from sentence_transformers import SentenceTransformer
     _HAS_ST = True
@@ -18,26 +15,21 @@ except Exception:
 
 load_dotenv()
 
-# --- ES config ---
 ES_URL = os.getenv("ES_URL", "http://localhost:9200").rstrip("/")
 ES_USER = os.getenv("ES_USER") or None
 ES_PASS = os.getenv("ES_PASS") or None
 IDX_META = os.getenv("ES_INDEX_META", "books_meta")
 IDX_CONTENT = os.getenv("ES_INDEX_CONTENT", "books_content")
 
-# --- PG config (для гидратации карточек) ---
-PG_DSN = os.getenv("PG_DSN") or os.getenv("DSN")  # можно прокинуть тот же DSN, что и в импортер
+PG_DSN = os.getenv("PG_DSN") or os.getenv("DSN")
 if not PG_DSN:
     PG_DSN = ""
 
-# --- NEW: encoder config ---
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
-EMBED_DEVICE = os.getenv("EMBED_DEVICE", "auto")  # auto|cpu|cuda
+EMBED_DEVICE = os.getenv("EMBED_DEVICE", "auto")
 EMBED_NORMALIZE = (os.getenv("EMBED_NORMALIZE", "true").lower() in {"1", "true", "yes", "on"})
-# Для bge-m3 полезно добавлять префикс "query: " к запросам
 EMBED_ADD_QUERY_PREFIX = (os.getenv("EMBED_ADD_QUERY_PREFIX", "true").lower() in {"1", "true", "yes", "on"})
 
-# --- HTTP session for ES ---
 session = requests.Session()
 if ES_USER and ES_PASS:
     session.auth = (ES_USER, ES_PASS)
@@ -50,7 +42,6 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
-# --- PG connection (ленивая инициализация) ---
 _pg_conn = None
 
 def get_pg():
@@ -62,7 +53,6 @@ def get_pg():
         _pg_conn.autocommit = True
     return _pg_conn
 
-# --- ES helpers ---
 def es_post(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
     r = session.post(f"{ES_URL}/{path.lstrip('/')}", json=body, timeout=60)
     if r.status_code >= 400:
@@ -75,11 +65,7 @@ def es_get(path: str) -> Dict[str, Any]:
         raise HTTPException(r.status_code, r.text)
     return r.json()
 
-# --- PG hydration helper ---
 def fetch_books_by_ids(ids: List[int]) -> Dict[int, Dict[str, Any]]:
-    """
-    Возвращает словарь book_id -> карточка книги (из PG), включая список авторов (упорядочен по ord).
-    """
     if not ids:
         return {}
     conn = get_pg()
@@ -120,14 +106,12 @@ def fetch_books_by_ids(ids: List[int]) -> Dict[int, Dict[str, Any]]:
         }
     return by_id
 
-# --- NEW: encoder init ---
 _encoder: Optional[SentenceTransformer] = None
 _encoder_dim: Optional[int] = None
 
 def _pick_device() -> str:
     if EMBED_DEVICE in ("cpu", "cuda"):
         return EMBED_DEVICE
-    # auto
     try:
         import torch
         return "cuda" if torch.cuda.is_available() else "cpu"
@@ -146,7 +130,6 @@ def get_encoder() -> Tuple[SentenceTransformer, int, str]:
         dim = len(test_emb[0])
         _encoder = enc
         _encoder_dim = dim
-        # простая печать в логи
         print(f"[INFO] Semantic encoder ready: model={EMBED_MODEL}, dim={dim}, device={dev}, normalize={EMBED_NORMALIZE}")
     return _encoder, int(_encoder_dim or 0), _encoder._target_device.type  # type: ignore[attr-defined]
 
@@ -166,7 +149,6 @@ def health():
         info = es_get("")
     except Exception as e:
         raise HTTPException(503, f"ES not reachable: {e}")
-    # Проверим PG, если настроен
     pg_ok = None
     if PG_DSN:
         try:
@@ -177,7 +159,6 @@ def health():
             pg_ok = True
         except Exception:
             pg_ok = False
-    # Проверим encoder
     enc_ok = None
     try:
         if _HAS_ST:
@@ -189,7 +170,7 @@ def health():
         enc_ok = {"ok": False, "reason": str(e)}
     return {"ok": True, "es": info.get("version", {}), "pg_ok": pg_ok, "encoder": enc_ok}
 
-# ---------- Поиск по метаданным (ES -> hydrate from PG) ----------
+# ---------- Поиск по метаданным ----------
 @app.get("/books/search")
 def search_books(
     q: Optional[str] = Query(None, description="Запрос (название/автор/жанр/описание)"),
@@ -236,7 +217,7 @@ def search_books(
     body = {
         "from": offset, "size": size,
         "query": {"bool": {"must": must or [{"match_all": {}}], "filter": filters}},
-        "_source": ["book_id"]  # берём только идентификатор для гидратации
+        "_source": ["book_id"]
     }
     res = es_post(f"{IDX_META}/_search", body)
 
@@ -266,7 +247,7 @@ def search_books(
     total = res.get("hits", {}).get("total", {}).get("value", 0)
     return {"total": total, "hits": hits}
 
-# ---------- Поиск цитат (BM25 через ES content) ----------
+# ---------- Поиск цитат ----------
 @app.get("/quotes/search")
 def search_quotes(
     q: str = Query(..., description="Цитата/фраза для match_phrase"),
@@ -321,7 +302,7 @@ def search_quotes(
         })
     return {"total": res.get("hits", {}).get("total", {}).get("value", 0), "hits": hits}
 
-# ---------- NEW: Семантический поиск (kNN по content_vec) ----------
+# ----------  Семантический поиск ----------
 @app.get("/semantic/search")
 def semantic_search(
     q: str = Query(..., description="Текст запроса (по смыслу)"),
@@ -331,12 +312,6 @@ def semantic_search(
     offset: int = Query(0, ge=0),
     num_candidates: Optional[int] = Query(None, description="kNN кандидатов перед резкой size; по умолчанию size*50, минимум 100"),
 ):
-    """
-    Делает:
-      1) encode запроса -> вектор
-      2) kNN поиск по ES (поле content_vec) в индексе books_content
-      3) возвращает параграфы + простые сниппеты и метаданные книги (через PG)
-    """
     if not _HAS_ST:
         raise HTTPException(500, "sentence-transformers is not installed on the server")
     try:
@@ -345,7 +320,6 @@ def semantic_search(
         raise HTTPException(500, f"Encoder error: {e}")
 
     ncand = max(100, size * 50) if num_candidates is None else max(1, int(num_candidates))
-    # Фильтры (после_vector фильтра в ES 8.14 можно класть в 'filter' у knn)
     filters: List[Dict[str, Any]] = []
     if lang:
         filters.append({"term": {"lang": lang}})
@@ -358,7 +332,7 @@ def semantic_search(
         "knn": {
             "field": "content_vec",
             "query_vector": qvec,
-            "k": size + offset,           # итоговое 'k' с учётом сдвига
+            "k": size + offset,
             "num_candidates": ncand,
             **({"filter": {"bool": {"filter": filters}}} if filters else {})
         },
@@ -371,7 +345,6 @@ def semantic_search(
 
     res = es_post(f"{IDX_CONTENT}/_search", body)
     hits_raw = res.get("hits", {}).get("hits", [])
-    # Собираем book_ids для гидратации
     book_ids: List[int] = []
     for h in hits_raw:
         src = h.get("_source", {})
@@ -398,7 +371,6 @@ def semantic_search(
             bid = None
         card = book_meta.get(bid) if bid is not None else None
 
-        # cosine score (ES отдаёт _score ~ cosine sim при normalized vec)
         score = h.get("_score")
 
         hits.append({
@@ -416,7 +388,6 @@ def semantic_search(
             "is_heading": src.get("is_heading"),
             "para_type": src.get("para_type"),
             "snippet": _make_snippet(src.get("content")),
-            # добавим краткую карточку книги (гидратация)
             "book_card": card if card else None
         })
 
