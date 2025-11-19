@@ -7,3 +7,14 @@ __pycache__/
 *.log
 *.epub
 **/*.epub
+
+# локальные папки с моделями
+model/
+models/
+models/**
+
+# крупные веса/артефакты на всякий
+*.bin
+*.safetensors
+*.pt
+tokenizer.json

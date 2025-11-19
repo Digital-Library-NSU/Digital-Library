@@ -70,18 +70,51 @@ curl http://localhost:9200
   "tagline" : "You Know, for Search"
 }
 ```
+ВАЖНО: если до введения векторизации уже запускали контейнер, то при запущенном контейнере в другом терминале
+```
+curl -XDELETE http://localhost:9200/books_content
+curl -XDELETE http://localhost:9200/_index_template/books_content_templateooks_content_template
+```
+а потом уже запускать скрипт
+
 ## 5) Импорт EPUB в БД + ES
 ```
 pip install -r requirements.txt
 ```
+Если есть CUDA
+```
+pip install -r requirements.txt --index-url https://download.pytorch.org/whl/cu121
+```
+Скачтать модель(получилось только так)
+```
+pip install -U huggingface_hub
+python - <<'PY'
+from huggingface_hub import snapshot_download
+snapshot_download('BAAI/bge-m3', local_dir='./models/bge-m3', resume_download=True)
+print("Модель скачана в ./models/bge-m3")
+PY
+```
+на последнем проценте подвиснит это ок
+
 ```
 python build_library_db.py \
   --dsn postgresql://libuser:libpass@localhost:5432/library \
-  --root <ВАШ_ПУТЬ_К_EPUB_ПАПКЕ> \
   --create-db --recreate-schema \
+  --root  <ВАШ_ПУТЬ_К_EPUB_ПАПКЕ> \
   --es-url http://localhost:9200 \
-  --es-use-templates --es-enable-suggest \
-  --chunk-words 800 --chunk-overlap 80
+  --es-index-meta books_meta \
+  --es-index-content books_content \
+  --recreate-es \
+  --es-use-templates \
+  --es-dense-vector-dim 1024 \
+  --join-short-paragraphs --min-paragraph-words 15 \
+  --para-window-size 2 --para-window-stride 1 \
+  --embed-model ./models/bge-m3 \
+  --embed-device auto \
+  --embed-batch-size 64 \
+  --embed-max-words 256 --embed-overlap-words 32 \
+  --embed-normalize \
+  --limit 5 #на cpu даже 5 первых книг будут векторизоваться долго
 ```
 ## 6) Как открыть базу в DBeaver
 1. Database → New Database Connection → PostgreSQL
@@ -112,4 +145,9 @@ GET http://localhost:8000/books/search?q=Анна%20Коренина&size=5
 Поиск по цитате:
 ```
 GET http://localhost:8000/quotes/search?q=Все%20смешалось%20в%20доме%20Облонских&slop=2&size=5
+```
+
+Семантический поиск:
+```
+GET http://localhost:8000/semantic/search?q=книга%20про%20женщину&size=5
 ```

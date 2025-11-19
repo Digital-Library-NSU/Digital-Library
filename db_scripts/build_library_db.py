@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-build_library_db.py — EPUB -> PostgreSQL (метаданные) + Elasticsearch (текст по абзацам).
-ТЕКСТ книг в Postgres НЕ хранится. Текст только в ES.
-
-Изменение: в индекс контента ES поле "title" теперь ВСЕГДА берётся из dc:title OPF
-(метаданные книги). Заголовки глав НЕ подставляются в это поле.
-"""
-
 import argparse
 import hashlib
 import json
@@ -21,16 +11,23 @@ from urllib.parse import unquote, urlparse
 
 import psycopg2
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+import warnings
 from tqdm import tqdm
 import unicodedata
+
+import torch
+from sentence_transformers import SentenceTransformer
+
+
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 # ---------------- helpers ----------------
 
 WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 
 SCHEMA_SQL = """
--- === базовая схема Postgres (БЕЗ текста книг) ===
+-- === базовая схема Postgres ===
 
 CREATE TABLE IF NOT EXISTS authors (
   id        BIGSERIAL PRIMARY KEY,
@@ -71,7 +68,7 @@ CREATE TABLE IF NOT EXISTS editions (
   id          BIGSERIAL PRIMARY KEY,
   book_id     BIGINT REFERENCES books(id) ON DELETE CASCADE,
   format      TEXT NOT NULL,
-  storage_key TEXT NOT NULL,   -- путь к файлу EPUB
+  storage_key TEXT NOT NULL,
   size_bytes  BIGINT,
   sha256      TEXT UNIQUE,
   drm         BOOLEAN,
@@ -79,7 +76,7 @@ CREATE TABLE IF NOT EXISTS editions (
   created_at  TIMESTAMPTZ DEFAULT now()
 );
 
--- Оглавление/главы (без текста)
+-- Оглавление/главы
 CREATE TABLE IF NOT EXISTS edition_chapters (
   id          BIGSERIAL PRIMARY KEY,
   edition_id  BIGINT REFERENCES editions(id) ON DELETE CASCADE,
@@ -88,22 +85,21 @@ CREATE TABLE IF NOT EXISTS edition_chapters (
   href        TEXT
 );
 
--- Метаданные АБЗАЦЕВ/окон (без текста)
+-- Метаданные АБЗАЦЕВ/окон
 CREATE TABLE IF NOT EXISTS content_paragraphs (
   id           BIGSERIAL PRIMARY KEY,
   book_id      BIGINT REFERENCES books(id) ON DELETE CASCADE,
   edition_id   BIGINT REFERENCES editions(id) ON DELETE CASCADE,
   chapter_id   BIGINT REFERENCES edition_chapters(id) ON DELETE SET NULL,
-  para_start   INT NOT NULL,      -- номер первого абзаца окна (0-based)
-  para_end     INT NOT NULL,      -- номер последнего абзаца окна (включительно)
+  para_start   INT NOT NULL,
+  para_end     INT NOT NULL,
   window_size  INT NOT NULL,
-  tokens_from  INT,               -- границы по словным токенам в рамках книги/издания
+  tokens_from  INT,
   tokens_to    INT,
   es_index     TEXT,
   es_doc_id    TEXT UNIQUE,
   lang         TEXT,
-  embedding    TEXT,              -- позже можно заменить на VECTOR(N) при включении pgvector
-  para_type    TEXT,              -- тип первого абзаца в окне: paragraph|heading|list|blockquote|pre
+  para_type    TEXT,
   is_heading   BOOLEAN
 );
 
@@ -140,10 +136,6 @@ def tokenize_words(text: str) -> List[str]:
     return WORD_RE.findall(text)
 
 def html_to_paragraph_blocks(html: str) -> List[Tuple[str, str]]:
-    """
-    Возвращает [(para_type, text), ...] в порядке документа.
-    para_type: 'heading'|'paragraph'|'list'|'blockquote'|'pre'
-    """
     soup = BeautifulSoup(html, "lxml")
     for bad in soup(["script", "style", "nav", "aside", "footer", "header"]):
         bad.decompose()
@@ -177,7 +169,6 @@ def html_to_paragraph_blocks(html: str) -> List[Tuple[str, str]]:
     return blocks
 
 def coalesce_short_paragraphs(blocks: List[Tuple[str,str]], min_words: int) -> List[Tuple[str,str]]:
-    """Склеивает подряд идущие короткие не-заголовочные абзацы до минимума."""
     out: List[Tuple[str,str]] = []
     buf_type, buf_txt, buf_w = None, "", 0
 
@@ -202,10 +193,6 @@ def coalesce_short_paragraphs(blocks: List[Tuple[str,str]], min_words: int) -> L
     return out
 
 def paragraph_windows(blocks: List[Tuple[str,str]], window_size: int, stride: int):
-    """
-    blocks: список (kind, text) после возможной склейки коротышей.
-    Возвращает [(start, end, [(kind,text), ...]), ...]
-    """
     window_size = max(1, int(window_size))
     stride = max(1, int(stride))
     n = len(blocks)
@@ -220,6 +207,50 @@ def paragraph_windows(blocks: List[Tuple[str,str]], window_size: int, stride: in
         out.append((i, i + window_size - 1, blocks[i:i + window_size]))
         i += stride
     return out
+
+# ---------- Embedding helpers ----------
+
+def get_encoder(model_name: Optional[str], device_mode: str = "auto"):
+    if not model_name:
+        return None, 0, "cpu"
+    if SentenceTransformer is None:
+        raise RuntimeError("sentence-transformers не установлен. pip install sentence-transformers")
+
+    dev = "cpu"
+    if device_mode == "auto":
+        if torch is not None and torch.cuda.is_available():
+            dev = "cuda"
+        elif torch is not None and getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            dev = "mps"
+        else:
+            dev = "cpu"
+    elif device_mode in ("cpu", "cuda", "mps"):
+        dev = device_mode
+    else:
+        dev = "cpu"
+
+    enc = SentenceTransformer(model_name, device=dev)
+    try:
+        test = enc.encode(["test"], normalize_embeddings=False)
+        dim = len(test[0])
+    except Exception:
+        dim = enc.get_sentence_embedding_dimension()
+    print(f"[INFO] Embedding model: {model_name}, dim={dim}, device={dev}")
+    return enc, dim, dev
+
+def split_by_words(text: str, max_words: int, overlap_words: int) -> List[str]:
+    ws = tokenize_words(text)
+    if len(ws) <= max_words:
+        return [text]
+    chunks, i = [], 0
+    step = max(1, max_words - max(0, overlap_words))
+    while i < len(ws):
+        part = ws[i:i+max_words]
+        if not part:
+            break
+        chunks.append(" ".join(part))
+        i += step
+    return chunks
 
 # ---------------- DB ops ----------------
 
@@ -237,7 +268,6 @@ def connect(dsn: str):
     return conn
 
 def ensure_database(dsn: str):
-    """Создать целевую БД, если не существует (через 'postgres')."""
     dbname = parse_dsn_dbname(dsn)
     if not dbname:
         print("[WARN] Не удалось распарсить имя БД из DSN; пропускаю создание.", file=sys.stderr)
@@ -271,33 +301,6 @@ def drop_schema(conn):
 def apply_schema(conn):
     with conn.cursor() as cur:
         cur.execute(SCHEMA_SQL)
-    conn.commit()
-
-def enable_pgvector(conn, vector_dim: int):
-    prev = conn.autocommit
-    conn.autocommit = True
-    try:
-        with conn.cursor() as cur:
-            try:
-                cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            except Exception as e:
-                print(f"[WARN] EXT vector: {e}", file=sys.stderr)
-    finally:
-        conn.autocommit = prev
-
-    with conn.cursor() as cur:
-        cur.execute("""
-            DO $$
-            BEGIN
-              IF EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name='content_paragraphs' AND column_name='embedding' AND data_type='text'
-              ) THEN
-                ALTER TABLE content_paragraphs DROP COLUMN embedding;
-                ALTER TABLE content_paragraphs ADD COLUMN embedding VECTOR(%s);
-              END IF;
-            END$$;
-        """, (int(vector_dim),))
     conn.commit()
 
 def insert_paragraph_meta(cur, book_id: int, edition_id: int, chapter_id: Optional[int],
@@ -358,37 +361,25 @@ def ensure_es_indices(es_url: str, idx_meta: str, idx_content: str,
                 "book_id":     {"type": "keyword", "normalizer": "kw_lower"},
                 "title": {
                     "type": "text", "analyzer": "quote",
-                    "fields": {
-                        "raw": {"type": "keyword", "normalizer": "kw_lower"},
-                        "ru":  {"type": "text", "analyzer": "ru"},
-                        "en":  {"type": "text", "analyzer": "en"}
-                    }
+                    "fields": {"raw": {"type": "keyword", "normalizer": "kw_lower"},
+                               "ru": {"type": "text", "analyzer": "ru"},
+                               "en": {"type": "text", "analyzer": "en"}}
                 },
                 "author_names": {
                     "type": "text", "analyzer": "quote",
-                    "fields": {
-                        "raw": {"type": "keyword", "normalizer": "kw_lower"},
-                        "ru":  {"type": "text", "analyzer": "ru"},
-                        "en":  {"type": "text", "analyzer": "en"}
-                    }
+                    "fields": {"raw": {"type": "keyword", "normalizer": "kw_lower"},
+                               "ru": {"type": "text", "analyzer": "ru"},
+                               "en": {"type": "text", "analyzer": "en"}}
                 },
-                "subjects": {
-                    "type": "text", "analyzer": "quote",
-                    "fields": {"raw": {"type": "keyword", "normalizer": "kw_lower"}}
-                },
-                "publisher": {
-                    "type": "text", "analyzer": "quote",
-                    "fields": {"raw": {"type": "keyword", "normalizer": "kw_lower"}}
-                },
-                "lang":     {"type": "keyword", "normalizer": "kw_lower"},
+                "subjects": {"type": "text", "analyzer": "quote",
+                             "fields": {"raw": {"type": "keyword", "normalizer": "kw_lower"}}},
+                "publisher": {"type": "text", "analyzer": "quote",
+                              "fields": {"raw": {"type": "keyword", "normalizer": "kw_lower"}}},
+                "lang": {"type": "keyword", "normalizer": "kw_lower"},
                 "pub_year": {"type": "integer"},
-                "description": {
-                    "type": "text", "analyzer": "quote",
-                    "fields": {
-                        "ru": {"type": "text", "analyzer": "ru"},
-                        "en": {"type": "text", "analyzer": "en"}
-                    }
-                }
+                "description": {"type": "text", "analyzer": "quote",
+                                "fields": {"ru": {"type": "text", "analyzer": "ru"},
+                                           "en": {"type": "text", "analyzer": "en"}}}
             }
         }
         if enable_suggest:
@@ -405,26 +396,23 @@ def ensure_es_indices(es_url: str, idx_meta: str, idx_content: str,
             "lang":        {"type": "keyword", "normalizer": "kw_lower"},
             "title": {
                 "type": "text", "analyzer": "quote",
-                "fields": {
-                    "raw": {"type": "keyword", "normalizer": "kw_lower"},
-                    "ru":  {"type": "text", "analyzer": "ru"},
-                    "en":  {"type": "text", "analyzer": "en"}
-                }
+                "fields": {"raw": {"type": "keyword", "normalizer": "kw_lower"},
+                           "ru": {"type": "text", "analyzer": "ru"},
+                           "en": {"type": "text", "analyzer": "en"}}
             },
             "content": {
                 "type": "text", "analyzer": "quote",
                 "term_vector": "with_positions_offsets",
-                "fields": {
-                    "ru": {"type": "text", "analyzer": "ru"},
-                    "en": {"type": "text", "analyzer": "en"}
-                }
+                "fields": {"ru": {"type": "text", "analyzer": "ru"},
+                           "en": {"type": "text", "analyzer": "en"}}
             },
             "length":      {"type": "integer"},
             "para_start":  {"type": "integer"},
             "para_end":    {"type": "integer"},
             "window_size": {"type": "integer"},
             "is_heading":  {"type": "boolean"},
-            "para_type":   {"type": "keyword"}
+            "para_type":   {"type": "keyword"},
+            "subchunk_idx":{"type": "integer"}
         }
         if dense_vec_dim and dense_vec_dim > 0:
             props["content_vec"] = {
@@ -434,16 +422,12 @@ def ensure_es_indices(es_url: str, idx_meta: str, idx_content: str,
         return {"_source": {"enabled": store_source}, "dynamic": "false", "properties": props}
 
     if use_templates:
-        tmpl_meta = {
-            "index_patterns": ["books_meta*"],
-            "template": {"settings": {"analysis": analysis}, "mappings": meta_mappings()},
-            "priority": 10
-        }
-        tmpl_content = {
-            "index_patterns": ["books_content*"],
-            "template": {"settings": {"analysis": analysis}, "mappings": content_mappings()},
-            "priority": 10
-        }
+        tmpl_meta = {"index_patterns": ["books_meta*"],
+                     "template": {"settings": {"analysis": analysis}, "mappings": meta_mappings()},
+                     "priority": 10}
+        tmpl_content = {"index_patterns": ["books_content*"],
+                        "template": {"settings": {"analysis": analysis}, "mappings": content_mappings()},
+                        "priority": 10}
         es_request("PUT", f"{es_url}/_index_template/books_meta_template", tmpl_meta)
         es_request("PUT", f"{es_url}/_index_template/books_content_template", tmpl_content)
 
@@ -478,7 +462,7 @@ def es_bulk(es_url: str, index: str, docs: List[Dict], id_field: Optional[str] =
         if r.status_code >= 400 or '"errors":true' in r.text:
             raise RuntimeError(f"ES bulk failed: {r.status_code} {r.text[:1000]}")
 
-# ---------------- EPUB -> DB+ES ----------------
+# ---------------- EPUB -> DB+ES+ embeddings ----------------
 
 def parse_container_and_opf(z: zipfile.ZipFile) -> str:
     container_xml = z.read("META-INF/container.xml")
@@ -497,7 +481,6 @@ def parse_opf(z: zipfile.ZipFile, opf_path: str):
     ns = {"dc": "http://purl.org/dc/elements/1.1/",
           "opf": "http://www.idpf.org/2007/opf"}
 
-    # Берём ПЕРВЫЙ непустой dc:title (иногда их несколько)
     titles = [norm_space(el.text) for el in opf.findall(".//dc:title", ns) if el is not None and norm_space(el.text)]
     title = titles[0] if titles else None
 
@@ -601,11 +584,13 @@ def insert_or_get_edition(cur, book_id: int, storage_key: str, size_bytes: int, 
     cur.execute(
         """
         INSERT INTO editions (book_id, format, storage_key, size_bytes, sha256, drm, opf_path)
-        VALUES (%s,'EPUB',%s,%s,%s,false,%s) RETURNING id
+        VALUES (%s,'EPUB',%s,%s,%s,false,%s)
+        RETURNING id
         """,
         (book_id, storage_key, size_bytes, sha256, opf_path),
     )
     return cur.fetchone()[0]
+
 
 def insert_chapter(cur, edition_id: int, ord_: int, title: Optional[str], href: str) -> int:
     cur.execute(
@@ -618,13 +603,11 @@ def insert_chapter(cur, edition_id: int, ord_: int, title: Optional[str], href: 
     return cur.fetchone()[0]
 
 def es_bulk_safe(es_url: str, idx_meta: str, idx_content: str, meta_doc: Dict, content_docs: List[Dict]):
-    # meta
     if meta_doc:
         try:
             es_bulk(es_url, idx_meta, [meta_doc], id_field="book_id", chunk_size=1)
         except Exception as e:
             print(f"[WARN] ES meta bulk failed for book {meta_doc.get('book_id')}: {e}", file=sys.stderr)
-    # content
     if content_docs:
         try:
             es_bulk(es_url, idx_content, content_docs, id_field="_id", chunk_size=1000)
@@ -632,15 +615,15 @@ def es_bulk_safe(es_url: str, idx_meta: str, idx_content: str, meta_doc: Dict, c
             print(f"[WARN] ES content bulk failed: {e}", file=sys.stderr)
 
 def _fallback_book_title(file_path: Path, meta_title: Optional[str]) -> str:
-    """Тихий запасной вариант, если в OPF нет dc:title."""
     if meta_title and meta_title.strip():
         return meta_title
-    # как крайняя мера — имя файла без расширения
     return Path(file_path).stem
 
 def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: str, idx_content: str):
     size_bytes = file_path.stat().st_size
     sha = sha256_file(file_path)
+
+    print(f"[INFO] Processing EPUB: {file_path.name}")
 
     with zipfile.ZipFile(file_path, "r") as z, conn.cursor() as cur:
         # 1) OPF
@@ -649,16 +632,16 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
             meta = parse_opf(z, opf_path)
         except Exception as e:
             print(f"[WARN] {file_path.name}: OPF parse failed: {e}", file=sys.stderr)
-            return
+            return "skipped"
 
         # 2) книга + издание
         book_id = find_or_insert_book(cur, meta, meta["subjects"])
         edition_id = insert_or_get_edition(cur, book_id, str(file_path), size_bytes, sha, meta["opf_path"])
         if not edition_id:
             conn.commit()
-            return
+            return "ok"
 
-        # 3) главы (href/title/ord), без текста
+        # 3) главы
         chapter_ids: List[Optional[int]] = []
         for idx, (href, media_type) in enumerate(meta["spine"], start=1):
             if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
@@ -672,8 +655,8 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
                 try:
                     raw = z.read(alt); href = alt
                 except KeyError:
-                    print(f"[WARN] missing spine resource {href}", file=sys.stderr)
-                    chapter_ids.append(None); continue
+                    chapter_ids.append(None)
+                    continue
             try:
                 html = raw.decode("utf-8", errors="ignore")
                 soup = BeautifulSoup(html, "lxml")
@@ -708,9 +691,14 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
         else:
             meta_doc = {}
 
-        # 5) ES: контент абзацами/окнами
+        # 5) ES: контент абзацами/окнами + возможное дробление и эмбеддинги
         content_docs: List[Dict] = []
-        words_running = 0  # глобальный счётчик слов по книге/изданию
+        texts_for_embed: List[str] = []
+        words_running = 0
+
+        missing = 0
+        max_warn = getattr(args, "warn_cap", 5)
+        max_missing_spine = getattr(args, "max_missing_spine", 50)
 
         for c_idx, (href, media_type) in enumerate(meta["spine"], start=1):
             if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
@@ -722,7 +710,13 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
                 try:
                     raw = z.read(alt); href = alt
                 except KeyError:
-                    print(f"[WARN] missing spine resource {href}", file=sys.stderr)
+                    missing += 1
+                    if missing <= max_warn:
+                        print(f"[WARN] missing spine resource {href}", file=sys.stderr)
+                    if missing > max_missing_spine:
+                        print(f"[WARN] too many missing spine resources ({missing}) → skip content for {file_path.name}", file=sys.stderr)
+                        conn.commit()
+                        return "skipped"
                     continue
 
             html = raw.decode("utf-8", errors="ignore")
@@ -732,7 +726,6 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
             if args.join_short_paragraphs:
                 blocks = coalesce_short_paragraphs(blocks, args.min_paragraph_words)
 
-            # токены по абзацам и префиксные суммы внутри главы
             para_token_counts = [len(tokenize_words(txt)) for kind, txt in blocks]
             prefix = [0]
             for c in para_token_counts:
@@ -754,45 +747,82 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
                 w_from = base_offset + prefix[start]
                 w_to   = base_offset + prefix[end + 1]
 
-                doc_id = f"{edition_id}:{c_idx}:{start}"
+                base_doc_id = f"{edition_id}:{c_idx}:{start}"
 
-                # ВАЖНО: title = ТОЛЬКО НАЗВАНИЕ КНИГИ ИЗ OPF
-                content_docs.append({
-                    "_id": doc_id,
-                    "book_id": str(book_id),
-                    "edition_id": str(edition_id),
-                    "chapter_ord": c_idx,
-                    "chapter_href": href,
-                    "lang": meta["language"] or "",
-                    "title": book_title_for_es,
-                    "content": para_text,
-                    "length": len(para_text),
-                    "para_start": start,
-                    "para_end": end,
-                    "window_size": end - start + 1,
-                    "is_heading": is_head,
-                    "para_type": kind_first
-                })
+                subtexts = [para_text]
+                if args.embed_model and args.embed_max_words > 0:
+                    subtexts = split_by_words(para_text, args.embed_max_words, args.embed_overlap_words)
+
+                for k, chunk_text in enumerate(subtexts):
+                    doc_id = base_doc_id if k == 0 and len(subtexts) == 1 else f"{base_doc_id}:{k}"
+                    content_docs.append({
+                        "_id": doc_id,
+                        "book_id": str(book_id),
+                        "edition_id": str(edition_id),
+                        "chapter_ord": c_idx,
+                        "chapter_href": href,
+                        "lang": meta["language"] or "",
+                        "title": book_title_for_es,
+                        "content": chunk_text,
+                        "length": len(chunk_text),
+                        "para_start": start,
+                        "para_end": end,
+                        "window_size": end - start + 1,
+                        "is_heading": is_head,
+                        "para_type": kind_first,
+                        "subchunk_idx": k if len(subtexts) > 1 else 0
+                    })
+                    if args.embed_model:
+                        texts_for_embed.append(chunk_text)
 
                 insert_paragraph_meta(
                     cur, book_id, edition_id, chapter_id,
                     start, end, end - start + 1,
                     w_from, w_to,
-                    idx_content, doc_id, meta["language"] or None,
+                    idx_content, base_doc_id, meta["language"] or None,
                     para_type=kind_first, is_heading=is_head
                 )
 
-            # после главы двигаем глобальный счётчик слов на общее число слов в главе
             words_running += prefix[-1]
 
-        # 6) коммиты + ES bulk
+        if missing > 0:
+            print(f"[WARN] missing spine resources total: {missing} (file: {file_path.name})", file=sys.stderr)
+
+        # 6) эмбеддинги
+        if args.embed_model:
+            enc, enc_dim, enc_dev = get_encoder(args.embed_model, device_mode=args.embed_device)
+            if args.es_dense_vector_dim <= 0:
+                ensure_es_indices(args.es_url, idx_meta, idx_content,
+                                  store_source=not args.es_no_source,
+                                  use_templates=args.es_use_templates,
+                                  dense_vec_dim=enc_dim,
+                                  enable_suggest=args.es_enable_suggest)
+            elif args.es_dense_vector_dim != enc_dim:
+                print(f"[WARN] es-dense-vector-dim ({args.es_dense_vector_dim}) != model dim ({enc_dim}). "
+                      f"Лучше выровнять. Пишу как есть, но ES маппинг должен совпадать.", file=sys.stderr)
+
+            batch = args.embed_batch_size
+            vecs: List[List[float]] = []
+            for i in range(0, len(texts_for_embed), batch):
+                chunk = texts_for_embed[i:i+batch]
+                embs = enc.encode(chunk, normalize_embeddings=bool(args.embed_normalize), convert_to_numpy=True)
+                vecs.extend(embs.tolist())
+
+            vi = 0
+            for d in content_docs:
+                if args.embed_model:
+                    d["content_vec"] = vecs[vi]
+                    vi += 1
+
+        # 7) коммиты + ES bulk
         conn.commit()
         if not args.no_es:
             es_bulk_safe(args.es_url, idx_meta, idx_content, meta_doc, content_docs)
         conn.commit()
+        return "ok"
 
 def main():
-    ap = argparse.ArgumentParser(description="EPUB -> Postgres (meta) + Elasticsearch (paragraphs).")
+    ap = argparse.ArgumentParser(description="EPUB -> Postgres (meta) + Elasticsearch (paragraphs + embeddings).")
     ap.add_argument("--dsn", required=True, help="PostgreSQL DSN (e.g., postgresql://user:pass@host:5432/db)")
     ap.add_argument("--root", required=True, help="Root folder with .epub files (recursively)")
     ap.add_argument("--create-db", action="store_true")
@@ -803,9 +833,13 @@ def main():
     ap.add_argument("--es-url", type=str, default="http://localhost:9200")
     ap.add_argument("--es-index-meta", type=str, default="books_meta")
     ap.add_argument("--es-index-content", type=str, default="books_content")
+    ap.add_argument("--recreate-es", action="store_true",
+                    help = "Полностью удалить индексы ES (--es-index-meta и --es-index-content) перед созданием")
     ap.add_argument("--es-no-source", action="store_true", help="Disable _source in content index")
     ap.add_argument("--es-use-templates", action="store_true", help="Create index templates")
-    ap.add_argument("--es-dense-vector-dim", type=int, default=0)
+    ap.add_argument("--es-dense-vector-dim", type=int, default=0,
+                    help="Размер поля content_vec. 0 — взять размер из модели.")
+
     ap.add_argument("--es-enable-suggest", action="store_true")
 
     # Абзацы и окна
@@ -814,9 +848,24 @@ def main():
     ap.add_argument("--para-window-size", type=int, default=1, help=">=1 (1 = без перекрытий)")
     ap.add_argument("--para-window-stride", type=int, default=1, help=">=1 (1 = максимальное перекрытие)")
 
-    # Векторная готовность (Postgres)
-    ap.add_argument("--with-pgvector", action="store_true")
-    ap.add_argument("--vector-dim", type=int, default=768)
+    # Флаги для контроля битых EPUB
+    ap.add_argument("--max-missing-spine", type=int, default=50,
+                    help="Сколько отсутствующих ресурсов в spine допускаем, прежде чем пропустить EPUB")
+    ap.add_argument("--warn-cap", type=int, default=5,
+                    help="Сколько первых предупреждений про отсутствующие ресурсы печатать")
+
+    # Эмбеддинги
+    ap.add_argument("--embed-model", type=str, default="",
+                    help="Путь к модели или HF id (например, BAAI/bge-m3). Пусто — без эмбеддингов.")
+    ap.add_argument("--embed-device", type=str, default="auto",
+                    help="auto|cpu|cuda|mps")
+    ap.add_argument("--embed-batch-size", type=int, default=64)
+    ap.add_argument("--embed-max-words", type=int, default=256,
+                    help="Макс. слов в одном векторе; больше — дробим на под-чанки")
+    ap.add_argument("--embed-overlap-words", type=int, default=32,
+                    help="Перекрытие между под-чанками при дроблении")
+    ap.add_argument("--embed-normalize", action="store_true",
+                    help="Нормализовать эмбеддинги (unit length)")
 
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
@@ -829,24 +878,26 @@ def main():
         if args.recreate_schema:
             drop_schema(conn)
         apply_schema(conn)
-        if args.with_pgvector:  # NOTE: typo fix ниже
-            pass
     except Exception:
         pass
-    # fix typo из блока выше:
-    try:
-        if args.with_pgvector:
-            enable_pgvector(conn, args.vector_dim)
-    except Exception as e:
-        print(f"[WARN] pgvector setup: {e}", file=sys.stderr)
+
+    skipped_epubs: List[str] = []
 
     try:
         if not args.no_es:
+            if args.recreate_es:
+                for name in (args.es_index_meta, args.es_index_content):
+                    try:
+                        r = requests.delete(f"{args.es_url}/{name}", timeout=30)
+                        if r.status_code not in (200, 202, 404):
+                            print(f"[WARN] ES delete {name}: {r.status_code} {r.text[:200]}", file=sys.stderr)
+                    except Exception as e:
+                        print(f"[WARN] ES delete {name} failed: {e}", file=sys.stderr)
             ensure_es_indices(
                 args.es_url, args.es_index_meta, args.es_index_content,
                 store_source=not args.es_no_source,
                 use_templates=args.es_use_templates,
-                dense_vec_dim=args.es_dense_vector_dim,
+                dense_vec_dim=max(0, args.es_dense_vector_dim),
                 enable_suggest=args.es_enable_suggest
             )
 
@@ -860,12 +911,22 @@ def main():
 
         for p in tqdm(files, desc="Importing EPUBs"):
             try:
-                process_epub(conn, p, args, None if args.no_es else args.es_url, args.es_index_meta, args.es_index_content)
+                status = process_epub(conn, p, args, None if args.no_es else args.es_url,
+                                      args.es_index_meta, args.es_index_content)
+                if status == "skipped":
+                    skipped_epubs.append(p.name)
             except Exception as e:
                 conn.rollback()
                 print(f"[ERROR] {p.name}: {e}", file=sys.stderr)
     finally:
         conn.close()
+
+    if skipped_epubs:
+        print("\n[INFO] Skipped EPUBs due to excessive missing spine resources:")
+        for name in skipped_epubs:
+            print(f"  - {name}")
+    else:
+        print("\n[INFO] No EPUBs were skipped.")
 
 if __name__ == "__main__":
     main()

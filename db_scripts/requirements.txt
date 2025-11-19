@@ -12,3 +12,7 @@ beautifulsoup4>=4.12
 lxml>=4.9
 tqdm>=4.66
 unidecode>=1.3
+
+#Модель
+sentence-transformers>=3.0.0
+torch>=2.3,<3.0
