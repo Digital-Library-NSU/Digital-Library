@@ -2,7 +2,7 @@ import os
 from typing import Optional, List, Dict, Any, Tuple
 
 import requests
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -27,22 +27,20 @@ if not PG_DSN:
 
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
 EMBED_DEVICE = os.getenv("EMBED_DEVICE", "auto")
-EMBED_NORMALIZE = (os.getenv("EMBED_NORMALIZE", "true").lower() in {"1", "true", "yes", "on"})
-EMBED_ADD_QUERY_PREFIX = (os.getenv("EMBED_ADD_QUERY_PREFIX", "true").lower() in {"1", "true", "yes", "on"})
+EMBED_NORMALIZE = (os.getenv("EMBED_NORMALIZE", "true").lower() in {
+                   "1", "true", "yes", "on"})
+EMBED_ADD_QUERY_PREFIX = (os.getenv(
+    "EMBED_ADD_QUERY_PREFIX", "true").lower() in {"1", "true", "yes", "on"})
 
 session = requests.Session()
 if ES_USER and ES_PASS:
     session.auth = (ES_USER, ES_PASS)
 session.headers.update({"Content-Type": "application/json"})
 
-app = FastAPI(title="Books Search API (ES + PG hydration + Semantic kNN)")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
-)
+router = APIRouter(prefix="/search")
 
 _pg_conn = None
+
 
 def get_pg():
     global _pg_conn
@@ -53,17 +51,20 @@ def get_pg():
         _pg_conn.autocommit = True
     return _pg_conn
 
+
 def es_post(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
     r = session.post(f"{ES_URL}/{path.lstrip('/')}", json=body, timeout=60)
     if r.status_code >= 400:
         raise HTTPException(r.status_code, r.text)
     return r.json()
 
+
 def es_get(path: str) -> Dict[str, Any]:
     r = session.get(f"{ES_URL}/{path.lstrip('/')}", timeout=30)
     if r.status_code >= 400:
         raise HTTPException(r.status_code, r.text)
     return r.json()
+
 
 def fetch_books_by_ids(ids: List[int]) -> Dict[int, Dict[str, Any]]:
     if not ids:
@@ -106,8 +107,10 @@ def fetch_books_by_ids(ids: List[int]) -> Dict[int, Dict[str, Any]]:
         }
     return by_id
 
+
 _encoder: Optional[SentenceTransformer] = None
 _encoder_dim: Optional[int] = None
+
 
 def _pick_device() -> str:
     if EMBED_DEVICE in ("cpu", "cuda"):
@@ -117,6 +120,7 @@ def _pick_device() -> str:
         return "cuda" if torch.cuda.is_available() else "cpu"
     except Exception:
         return "cpu"
+
 
 def get_encoder() -> Tuple[SentenceTransformer, int, str]:
     global _encoder, _encoder_dim
@@ -130,8 +134,11 @@ def get_encoder() -> Tuple[SentenceTransformer, int, str]:
         dim = len(test_emb[0])
         _encoder = enc
         _encoder_dim = dim
-        print(f"[INFO] Semantic encoder ready: model={EMBED_MODEL}, dim={dim}, device={dev}, normalize={EMBED_NORMALIZE}")
-    return _encoder, int(_encoder_dim or 0), _encoder._target_device.type  # type: ignore[attr-defined]
+        print(
+            f"[INFO] Semantic encoder ready: model={EMBED_MODEL}, dim={dim}, device={dev}, normalize={EMBED_NORMALIZE}")
+    # type: ignore[attr-defined]
+    return _encoder, int(_encoder_dim or 0), _encoder._target_device.type
+
 
 def encode_query(text: str) -> List[float]:
     enc, _, _ = get_encoder()
@@ -142,7 +149,9 @@ def encode_query(text: str) -> List[float]:
     return [float(x) for x in vec]
 
 # ---------- health ----------
-@app.get("/health")
+
+
+@router.get("/health")
 def health():
     info = {}
     try:
@@ -165,17 +174,23 @@ def health():
             enc, dim, dev = get_encoder()
             enc_ok = {"ok": True, "dim": dim, "device": dev}
         else:
-            enc_ok = {"ok": False, "reason": "sentence-transformers not installed"}
+            enc_ok = {"ok": False,
+                      "reason": "sentence-transformers not installed"}
     except Exception as e:
         enc_ok = {"ok": False, "reason": str(e)}
     return {"ok": True, "es": info.get("version", {}), "pg_ok": pg_ok, "encoder": enc_ok}
 
 # ---------- Поиск по метаданным ----------
-@app.get("/books/search")
+
+
+@router.get("/books")
 def search_books(
-    q: Optional[str] = Query(None, description="Запрос (название/автор/жанр/описание)"),
-    author: Optional[str] = Query(None, description="Фильтр по автору (точное, author_names.raw)"),
-    subject: Optional[str] = Query(None, description="Фильтр по жанру/теме (subjects.raw)"),
+    q: Optional[str] = Query(
+        None, description="Запрос (название/автор/жанр/описание)"),
+    author: Optional[str] = Query(
+        None, description="Фильтр по автору (точное, author_names.raw)"),
+    subject: Optional[str] = Query(
+        None, description="Фильтр по жанру/теме (subjects.raw)"),
     lang: Optional[str] = Query(None, description="Фильтр по языку (keyword)"),
     year_from: Optional[int] = Query(None),
     year_to: Optional[int] = Query(None),
@@ -210,8 +225,10 @@ def search_books(
         filters.append({"term": {"lang": lang}})
     if year_from or year_to:
         rng = {}
-        if year_from is not None: rng["gte"] = year_from
-        if year_to   is not None: rng["lte"] = year_to
+        if year_from is not None:
+            rng["gte"] = year_from
+        if year_to is not None:
+            rng["lte"] = year_to
         filters.append({"range": {"pub_year": rng}})
 
     body = {
@@ -248,10 +265,13 @@ def search_books(
     return {"total": total, "hits": hits}
 
 # ---------- Поиск цитат ----------
-@app.get("/quotes/search")
+
+
+@router.get("/quotes")
 def search_quotes(
     q: str = Query(..., description="Цитата/фраза для match_phrase"),
-    lang_field: Optional[str] = Query(None, description="content | content.ru | content.en"),
+    lang_field: Optional[str] = Query(
+        None, description="content | content.ru | content.en"),
     slop: int = Query(2, ge=0, le=10),
     size: int = Query(10, ge=1, le=50),
     offset: int = Query(0, ge=0),
@@ -276,14 +296,15 @@ def search_quotes(
         },
         "highlight": {
             "type": "fvh",
-            "fields": { field: {"fragment_size": 180, "number_of_fragments": 1} }
+            "fields": {field: {"fragment_size": 180, "number_of_fragments": 1}}
         }
     }
     res = es_post(f"{IDX_CONTENT}/_search", body)
     hits = []
     for h in res.get("hits", {}).get("hits", []):
         src = h.get("_source", {})
-        highlight = h.get("highlight", {}).get(field, []) or h.get("highlight", {}).get("content", [])
+        highlight = h.get("highlight", {}).get(
+            field, []) or h.get("highlight", {}).get("content", [])
         hits.append({
             "doc_id": h.get("_id"),
             "score": h.get("_score"),
@@ -303,23 +324,30 @@ def search_quotes(
     return {"total": res.get("hits", {}).get("total", {}).get("value", 0), "hits": hits}
 
 # ----------  Семантический поиск ----------
-@app.get("/semantic/search")
+
+
+@router.get("/semantic")
 def semantic_search(
     q: str = Query(..., description="Текст запроса (по смыслу)"),
-    lang: Optional[str] = Query(None, description="Фильтр языка документа (keyword, например 'ru'|'en')"),
-    book_id: Optional[int] = Query(None, description="Фильтр по конкретной книге"),
+    lang: Optional[str] = Query(
+        None, description="Фильтр языка документа (keyword, например 'ru'|'en')"),
+    book_id: Optional[int] = Query(
+        None, description="Фильтр по конкретной книге"),
     size: int = Query(10, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    num_candidates: Optional[int] = Query(None, description="kNN кандидатов перед резкой size; по умолчанию size*50, минимум 100"),
+    num_candidates: Optional[int] = Query(
+        None, description="kNN кандидатов перед резкой size; по умолчанию size*50, минимум 100"),
 ):
     if not _HAS_ST:
-        raise HTTPException(500, "sentence-transformers is not installed on the server")
+        raise HTTPException(
+            500, "sentence-transformers is not installed on the server")
     try:
         qvec = encode_query(q)
     except Exception as e:
         raise HTTPException(500, f"Encoder error: {e}")
 
-    ncand = max(100, size * 50) if num_candidates is None else max(1, int(num_candidates))
+    ncand = max(100, size * 50) if num_candidates is None else max(1,
+                                                                   int(num_candidates))
     filters: List[Dict[str, Any]] = []
     if lang:
         filters.append({"term": {"lang": lang}})
@@ -352,7 +380,8 @@ def semantic_search(
             book_ids.append(int(src.get("book_id")))
         except Exception:
             pass
-    book_meta = fetch_books_by_ids(list({i for i in book_ids if isinstance(i, int)}))
+    book_meta = fetch_books_by_ids(
+        list({i for i in book_ids if isinstance(i, int)}))
 
     def _make_snippet(txt: Optional[str]) -> Optional[str]:
         if not txt:

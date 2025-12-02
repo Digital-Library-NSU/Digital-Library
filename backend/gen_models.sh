@@ -1,0 +1,1 @@
+sqlacodegen --generator declarative postgresql:///test_db --outfile app/models.py --options use_inflect
