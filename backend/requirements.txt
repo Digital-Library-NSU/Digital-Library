@@ -1,3 +1,21 @@
+# FastAPI backend
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.29
+
+# HTTP + .env
+requests>=2.31
+python-dotenv>=1.0
+
+# Postgres + парсинг EPUB
+psycopg2-binary>=2.9
+beautifulsoup4>=4.12
+lxml>=4.9
+tqdm>=4.66
+unidecode>=1.3
+
+#Модель
+sentence-transformers>=3.0.0
+torch>=2.3,<3.0
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.12.0
