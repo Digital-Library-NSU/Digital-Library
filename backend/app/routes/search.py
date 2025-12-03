@@ -4,66 +4,15 @@ from typing import Optional, List, Dict, Any, Tuple
 import requests
 from fastapi import FastAPI, Query, HTTPException, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 
 import psycopg2
-try:
-    from sentence_transformers import SentenceTransformer
-    _HAS_ST = True
-except Exception:
-    _HAS_ST = False
 
-load_dotenv()
-
-ES_URL = os.getenv("ES_URL", "http://localhost:9200").rstrip("/")
-ES_USER = os.getenv("ES_USER") or None
-ES_PASS = os.getenv("ES_PASS") or None
-IDX_META = os.getenv("ES_INDEX_META", "books_meta")
-IDX_CONTENT = os.getenv("ES_INDEX_CONTENT", "books_content")
-
-PG_DSN = os.getenv("PG_DSN") or os.getenv("DSN")
-if not PG_DSN:
-    PG_DSN = ""
-
-EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
-EMBED_DEVICE = os.getenv("EMBED_DEVICE", "auto")
-EMBED_NORMALIZE = (os.getenv("EMBED_NORMALIZE", "true").lower() in {
-                   "1", "true", "yes", "on"})
-EMBED_ADD_QUERY_PREFIX = (os.getenv(
-    "EMBED_ADD_QUERY_PREFIX", "true").lower() in {"1", "true", "yes", "on"})
-
-session = requests.Session()
-if ES_USER and ES_PASS:
-    session.auth = (ES_USER, ES_PASS)
-session.headers.update({"Content-Type": "application/json"})
+from app.config import IDX_CONTENT, IDX_META
+from app.database import PG_DSN, get_pg
+from app.integrations.elasticsearch import es_post
+from app.integrations.embed_model import _HAS_ST, encode_query, get_encoder
 
 router = APIRouter(prefix="/search")
-
-_pg_conn = None
-
-
-def get_pg():
-    global _pg_conn
-    if not PG_DSN:
-        raise HTTPException(500, "PG_DSN is not set")
-    if _pg_conn is None or _pg_conn.closed != 0:
-        _pg_conn = psycopg2.connect(PG_DSN)
-        _pg_conn.autocommit = True
-    return _pg_conn
-
-
-def es_post(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    r = session.post(f"{ES_URL}/{path.lstrip('/')}", json=body, timeout=60)
-    if r.status_code >= 400:
-        raise HTTPException(r.status_code, r.text)
-    return r.json()
-
-
-def es_get(path: str) -> Dict[str, Any]:
-    r = session.get(f"{ES_URL}/{path.lstrip('/')}", timeout=30)
-    if r.status_code >= 400:
-        raise HTTPException(r.status_code, r.text)
-    return r.json()
 
 
 def fetch_books_by_ids(ids: List[int]) -> Dict[int, Dict[str, Any]]:
@@ -107,78 +56,6 @@ def fetch_books_by_ids(ids: List[int]) -> Dict[int, Dict[str, Any]]:
         }
     return by_id
 
-
-_encoder: Optional[SentenceTransformer] = None
-_encoder_dim: Optional[int] = None
-
-
-def _pick_device() -> str:
-    if EMBED_DEVICE in ("cpu", "cuda"):
-        return EMBED_DEVICE
-    try:
-        import torch
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception:
-        return "cpu"
-
-
-def get_encoder() -> Tuple[SentenceTransformer, int, str]:
-    global _encoder, _encoder_dim
-    if not _HAS_ST:
-        raise HTTPException(500, "sentence-transformers is not installed")
-    if _encoder is None:
-        dev = _pick_device()
-        enc = SentenceTransformer(EMBED_MODEL, device=dev)
-        # Определим размерность
-        test_emb = enc.encode(["test"], normalize_embeddings=EMBED_NORMALIZE)
-        dim = len(test_emb[0])
-        _encoder = enc
-        _encoder_dim = dim
-        print(
-            f"[INFO] Semantic encoder ready: model={EMBED_MODEL}, dim={dim}, device={dev}, normalize={EMBED_NORMALIZE}")
-    # type: ignore[attr-defined]
-    return _encoder, int(_encoder_dim or 0), _encoder._target_device.type
-
-
-def encode_query(text: str) -> List[float]:
-    enc, _, _ = get_encoder()
-    q = text.strip()
-    if EMBED_ADD_QUERY_PREFIX:
-        q = f"query: {q}"
-    vec = enc.encode([q], normalize_embeddings=EMBED_NORMALIZE)[0]
-    return [float(x) for x in vec]
-
-# ---------- health ----------
-
-
-@router.get("/health")
-def health():
-    info = {}
-    try:
-        info = es_get("")
-    except Exception as e:
-        raise HTTPException(503, f"ES not reachable: {e}")
-    pg_ok = None
-    if PG_DSN:
-        try:
-            conn = get_pg()
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                cur.fetchone()
-            pg_ok = True
-        except Exception:
-            pg_ok = False
-    enc_ok = None
-    try:
-        if _HAS_ST:
-            enc, dim, dev = get_encoder()
-            enc_ok = {"ok": True, "dim": dim, "device": dev}
-        else:
-            enc_ok = {"ok": False,
-                      "reason": "sentence-transformers not installed"}
-    except Exception as e:
-        enc_ok = {"ok": False, "reason": str(e)}
-    return {"ok": True, "es": info.get("version", {}), "pg_ok": pg_ok, "encoder": enc_ok}
 
 # ---------- Поиск по метаданным ----------
 
