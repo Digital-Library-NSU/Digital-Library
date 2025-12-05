@@ -15,6 +15,7 @@ app.add_middleware(
 )
 
 app.include_router(search_router)
+app.include_router(books_router)
 
 
 # ---------- health ----------
