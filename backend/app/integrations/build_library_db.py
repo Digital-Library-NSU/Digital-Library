@@ -723,7 +723,7 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
             chapter_id = chapter_ids[c_idx - 1]
 
             blocks = html_to_paragraph_blocks(html)
-            if args.join_short_paragraphs:
+            if not args.no_join_short_paragraphs:
                 blocks = coalesce_short_paragraphs(blocks, args.min_paragraph_words)
 
             para_token_counts = [len(tokenize_words(txt)) for kind, txt in blocks]
@@ -805,7 +805,7 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
             vecs: List[List[float]] = []
             for i in range(0, len(texts_for_embed), batch):
                 chunk = texts_for_embed[i:i+batch]
-                embs = enc.encode(chunk, normalize_embeddings=bool(args.embed_normalize), convert_to_numpy=True)
+                embs = enc.encode(chunk, normalize_embeddings=not args.no_embed_normalize, convert_to_numpy=True)
                 vecs.extend(embs.tolist())
 
             vi = 0
@@ -823,7 +823,7 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
 
 def main():
     ap = argparse.ArgumentParser(description="EPUB -> Postgres (meta) + Elasticsearch (paragraphs + embeddings).")
-    ap.add_argument("--dsn", required=True, help="PostgreSQL DSN (e.g., postgresql://user:pass@host:5432/db)")
+    ap.add_argument("--dsn", help="PostgreSQL DSN", default="postgresql://libuser:libpass@localhost:5432/library")
     ap.add_argument("--root", required=True, help="Root folder with .epub files (recursively)")
     ap.add_argument("--create-db", action="store_true")
     ap.add_argument("--recreate-schema", action="store_true")
@@ -837,15 +837,15 @@ def main():
                     help = "Полностью удалить индексы ES (--es-index-meta и --es-index-content) перед созданием")
     ap.add_argument("--es-no-source", action="store_true", help="Disable _source in content index")
     ap.add_argument("--es-use-templates", action="store_true", help="Create index templates")
-    ap.add_argument("--es-dense-vector-dim", type=int, default=0,
+    ap.add_argument("--es-dense-vector-dim", type=int, default=1024,
                     help="Размер поля content_vec. 0 — взять размер из модели.")
 
     ap.add_argument("--es-enable-suggest", action="store_true")
 
     # Абзацы и окна
     ap.add_argument("--min-paragraph-words", type=int, default=15)
-    ap.add_argument("--join-short-paragraphs", action="store_true")
-    ap.add_argument("--para-window-size", type=int, default=1, help=">=1 (1 = без перекрытий)")
+    ap.add_argument("--no-join-short-paragraphs", action="store_true",  help="Не склеивать короткие абзацы (по умолчанию склеиваем)")
+    ap.add_argument("--para-window-size", type=int, default=2, help=">=1 (1 = без перекрытий)")
     ap.add_argument("--para-window-stride", type=int, default=1, help=">=1 (1 = максимальное перекрытие)")
 
     # Флаги для контроля битых EPUB
@@ -855,7 +855,7 @@ def main():
                     help="Сколько первых предупреждений про отсутствующие ресурсы печатать")
 
     # Эмбеддинги
-    ap.add_argument("--embed-model", type=str, default="",
+    ap.add_argument("--embed-model", type=str, default="./models/bge-m3",
                     help="Путь к модели или HF id (например, BAAI/bge-m3). Пусто — без эмбеддингов.")
     ap.add_argument("--embed-device", type=str, default="auto",
                     help="auto|cpu|cuda|mps")
@@ -864,8 +864,8 @@ def main():
                     help="Макс. слов в одном векторе; больше — дробим на под-чанки")
     ap.add_argument("--embed-overlap-words", type=int, default=32,
                     help="Перекрытие между под-чанками при дроблении")
-    ap.add_argument("--embed-normalize", action="store_true",
-                    help="Нормализовать эмбеддинги (unit length)")
+    ap.add_argument("--no-embed-normalize", action="store_true",
+                    help="Не нормализовать эмбеддинги (по умолчанию нормализуем)")
 
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
@@ -902,11 +902,19 @@ def main():
             )
 
         root = Path(args.root).expanduser()
-        files = sorted([p for p in root.rglob("*.epub")])
+        if root.is_file():
+            if root.suffix.lower() != ".epub":
+                print(f"[ERROR] Формат файла не EPUB: {root}", file=sys.stderr)
+                return
+            files = [root]
+        else:
+            files = sorted(p for p in root.rglob("*.epub"))
+
         if args.limit > 0:
             files = files[: args.limit]
+
         if not files:
-            print("[INFO] EPUB файлы не найдены в указанной папке.", file=sys.stderr)
+            print("[INFO] EPUB файлы не найдены по указанному пути.", file=sys.stderr)
             return
 
         for p in tqdm(files, desc="Importing EPUBs"):
