@@ -3,8 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import PG_DSN
 from app.database import get_pg
 from app.integrations.elasticsearch import es_get
-from app.integrations.embed_model import get_encoder
-from app.routes import search_router
+from app.integrations.embed_model import _HAS_ST, get_encoder
+from app.routes import *
 
 
 app = FastAPI()
