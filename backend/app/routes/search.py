@@ -119,8 +119,10 @@ def search_books(
     ids_in_order: List[int] = []
     for h in es_hits:
         src = h.get("_source", {})
+
+        book_id = src.get("book_id") or h.get("_id")
         try:
-            ids_in_order.append(int(src.get("book_id")))
+            ids_in_order.append(int(book_id))
         except (TypeError, ValueError):
             continue
 
@@ -128,14 +130,18 @@ def search_books(
     hits = []
     for h in es_hits:
         score = h.get("_score")
-        bid_raw = h.get("_source", {}).get("book_id")
+        src = h.get("_source", {})
+
+        bid_raw = src.get("book_id") or h.get("_id")
         try:
             bid = int(bid_raw)
         except (TypeError, ValueError):
             continue
+
         card = by_id.get(bid)
         if not card:
             continue
+
         hits.append({"score": score, **card})
 
     total = res.get("hits", {}).get("total", {}).get("value", 0)
