@@ -319,7 +319,7 @@ def insert_paragraph_meta(cur, book_id: int, edition_id: int, chapter_id: Option
 
 # ---------------- ES ----------------
 
-def es_request(method: str, url: str, json_body=None, timeout=30):
+def es_request(method: str, url: str, json_body=None, timeout=120):
     r = requests.request(method, url, json=json_body, timeout=timeout)
     if r.status_code >= 400:
         raise RuntimeError(f"ES {method} {url} failed: {r.status_code} {r.text[:500]}")
@@ -422,9 +422,18 @@ def ensure_es_indices(es_url: str, idx_meta: str, idx_content: str,
         return {"_source": {"enabled": store_source}, "dynamic": "false", "properties": props}
 
     if use_templates:
-        tmpl_meta = {"index_patterns": ["books_meta*"],
-                     "template": {"settings": {"analysis": analysis}, "mappings": meta_mappings()},
-                     "priority": 10}
+        tmpl_meta = {
+            "index_patterns": ["books_meta*"],
+            "template": {
+                "settings": {
+                    "number_of_shards": 1,
+                    "number_of_replicas": 0,
+                    "analysis": analysis,
+                },
+                "mappings": meta_mappings(),
+            },
+            "priority": 10,
+        }
         tmpl_content = {"index_patterns": ["books_content*"],
                         "template": {"settings": {"analysis": analysis}, "mappings": content_mappings()},
                         "priority": 10}
@@ -434,10 +443,18 @@ def ensure_es_indices(es_url: str, idx_meta: str, idx_content: str,
     for name, mappings in [(idx_meta, meta_mappings()), (idx_content, content_mappings())]:
         r = requests.get(f"{es_url}/{name}", timeout=15)
         if r.status_code == 404:
-            body = {"settings": {"analysis": analysis}, "mappings": mappings}
+            body = {
+                "settings": {
+                    "number_of_shards": 1,
+                    "number_of_replicas": 0,
+                    "analysis": analysis,
+                },
+                "mappings": mappings,
+            }
             es_request("PUT", f"{es_url}/{name}", body)
         elif r.status_code >= 400:
             raise RuntimeError(f"ES check index {name} failed: {r.status_code} {r.text[:500]}")
+
 
 def es_bulk(es_url: str, index: str, docs: List[Dict], id_field: Optional[str] = None, chunk_size: int = 2000):
     import gzip
@@ -686,7 +703,6 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
                 "publisher": meta["publisher"] or "",
                 "lang": meta["language"] or "",
                 "pub_year": pub_year,
-                "description": meta["description"] or ""
             }
         else:
             meta_doc = {}
@@ -694,11 +710,31 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
         # 5) ES: контент абзацами/окнами + возможное дробление и эмбеддинги
         content_docs: List[Dict] = []
         texts_for_embed: List[str] = []
+        docs_for_embed: List[Dict] = []
         words_running = 0
 
         missing = 0
         max_warn = getattr(args, "warn_cap", 5)
         max_missing_spine = getattr(args, "max_missing_spine", 50)
+
+        if not args.no_es and meta.get("description"):
+            content_docs.append({
+                "_id": f"desc:{book_id}",
+                "book_id": str(book_id),
+                "edition_id": str(edition_id),
+                "chapter_ord": -1,
+                "chapter_href": "DESCRIPTION",
+                "lang": meta["language"] or "",
+                "title": book_title_for_es,
+                "content": meta["description"],
+                "length": len(meta["description"]),
+                "para_start": 0,
+                "para_end": 0,
+                "window_size": 1,
+                "is_heading": False,
+                "para_type": "description",
+                "subchunk_idx": 0,
+            })
 
         for c_idx, (href, media_type) in enumerate(meta["spine"], start=1):
             if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
@@ -755,7 +791,7 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
 
                 for k, chunk_text in enumerate(subtexts):
                     doc_id = base_doc_id if k == 0 and len(subtexts) == 1 else f"{base_doc_id}:{k}"
-                    content_docs.append({
+                    doc = {
                         "_id": doc_id,
                         "book_id": str(book_id),
                         "edition_id": str(edition_id),
@@ -771,8 +807,11 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
                         "is_heading": is_head,
                         "para_type": kind_first,
                         "subchunk_idx": k if len(subtexts) > 1 else 0
-                    })
+                    }
+                    content_docs.append(doc)
+
                     if args.embed_model:
+                        docs_for_embed.append(doc)
                         texts_for_embed.append(chunk_text)
 
                 insert_paragraph_meta(
@@ -789,30 +828,36 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
             print(f"[WARN] missing spine resources total: {missing} (file: {file_path.name})", file=sys.stderr)
 
         # 6) эмбеддинги
-        if args.embed_model:
+        if args.embed_model and texts_for_embed:
             enc, enc_dim, enc_dev = get_encoder(args.embed_model, device_mode=args.embed_device)
             if args.es_dense_vector_dim <= 0:
-                ensure_es_indices(args.es_url, idx_meta, idx_content,
-                                  store_source=not args.es_no_source,
-                                  use_templates=args.es_use_templates,
-                                  dense_vec_dim=enc_dim,
-                                  enable_suggest=args.es_enable_suggest)
+                ensure_es_indices(
+                    args.es_url, idx_meta, idx_content,
+                    store_source=not args.es_no_source,
+                    use_templates=args.es_use_templates,
+                    dense_vec_dim=enc_dim,
+                    enable_suggest=args.es_enable_suggest
+                )
             elif args.es_dense_vector_dim != enc_dim:
-                print(f"[WARN] es-dense-vector-dim ({args.es_dense_vector_dim}) != model dim ({enc_dim}). "
-                      f"Лучше выровнять. Пишу как есть, но ES маппинг должен совпадать.", file=sys.stderr)
+                print(
+                    f"[WARN] es-dense-vector-dim ({args.es_dense_vector_dim}) != model dim ({enc_dim}). "
+                    f"Лучше выровнять. Пишу как есть, но ES маппинг должен совпадать.",
+                    file=sys.stderr
+                )
 
             batch = args.embed_batch_size
             vecs: List[List[float]] = []
             for i in range(0, len(texts_for_embed), batch):
-                chunk = texts_for_embed[i:i+batch]
-                embs = enc.encode(chunk, normalize_embeddings=not args.no_embed_normalize, convert_to_numpy=True)
+                chunk = texts_for_embed[i:i + batch]
+                embs = enc.encode(
+                    chunk,
+                    normalize_embeddings=not args.no_embed_normalize,
+                    convert_to_numpy=True
+                )
                 vecs.extend(embs.tolist())
 
-            vi = 0
-            for d in content_docs:
-                if args.embed_model:
-                    d["content_vec"] = vecs[vi]
-                    vi += 1
+            for doc, vec in zip(docs_for_embed, vecs):
+                doc["content_vec"] = vec
 
         # 7) коммиты + ES bulk
         conn.commit()
