@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
+from pathlib import PurePosixPath
 
 import psycopg2
 import requests
@@ -434,9 +435,14 @@ def ensure_es_indices(es_url: str, idx_meta: str, idx_content: str,
             },
             "priority": 10,
         }
-        tmpl_content = {"index_patterns": ["books_content*"],
-                        "template": {"settings": {"analysis": analysis}, "mappings": content_mappings()},
-                        "priority": 10}
+        tmpl_content = {
+            "index_patterns": ["books_content*"],
+            "template": {
+                "settings": {"analysis": analysis},
+                "mappings": content_mappings()
+            },
+            "priority": 10
+        }
         es_request("PUT", f"{es_url}/_index_template/books_meta_template", tmpl_meta)
         es_request("PUT", f"{es_url}/_index_template/books_content_template", tmpl_content)
 
@@ -490,14 +496,69 @@ def parse_container_and_opf(z: zipfile.ZipFile) -> str:
         raise RuntimeError("rootfile not found in container.xml")
     return rf.attrib.get("full-path", "")
 
+def _resolve_href_relative(opf_path: str, href: str) -> str:
+    base = Path(opf_path).parent
+    if str(base) not in ("", "."):
+        raw = str(base / href)
+    else:
+        raw = href
+    return _normalize_zip_path(raw)
+
+def _normalize_zip_path(path: str) -> str:
+    p = PurePosixPath(path)
+    parts = []
+    for part in p.parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+        else:
+            parts.append(part)
+    return PurePosixPath(*parts).as_posix()
+
+def _find_cover_image_in_html(z: zipfile.ZipFile, html_path: str) -> Optional[str]:
+    try:
+        raw = z.read(html_path)
+    except KeyError:
+        return None
+
+    try:
+        soup = BeautifulSoup(raw, "lxml")
+    except Exception:
+        return None
+
+    img = soup.find("img")
+    if not img:
+        return None
+
+    src = img.get("src")
+    if not src:
+        return None
+
+    html_dir = Path(html_path).parent
+    if str(html_dir) not in ("", "."):
+        img_path_raw = str(html_dir / src)
+    else:
+        img_path_raw = src
+
+    img_path = _normalize_zip_path(img_path_raw)
+    return img_path
+
 def parse_opf(z: zipfile.ZipFile, opf_path: str):
     import xml.etree.ElementTree as ET
     opf_xml = z.read(opf_path)
     opf = ET.fromstring(opf_xml)
-    ns = {"dc": "http://purl.org/dc/elements/1.1/",
-          "opf": "http://www.idpf.org/2007/opf"}
+    ns = {
+        "dc": "http://purl.org/dc/elements/1.1/",
+        "opf": "http://www.idpf.org/2007/opf",
+    }
 
-    titles = [norm_space(el.text) for el in opf.findall(".//dc:title", ns) if el is not None and norm_space(el.text)]
+    titles = [
+        norm_space(el.text)
+        for el in opf.findall(".//dc:title", ns)
+        if el is not None and norm_space(el.text)
+    ]
     title = titles[0] if titles else None
 
     def get_text(path):
@@ -508,8 +569,17 @@ def parse_opf(z: zipfile.ZipFile, opf_path: str):
     publisher = get_text(".//dc:publisher") or None
     date_raw = get_text(".//dc:date") or ""
     description = get_text(".//dc:description") or None
-    creators = [norm_space(el.text) for el in opf.findall(".//dc:creator", ns) if el is not None and norm_space(el.text)]
-    subjects = [norm_space(s.text) for s in opf.findall(".//dc:subject", ns) if s is not None and norm_space(s.text)]
+    creators = [
+        norm_space(el.text)
+        for el in opf.findall(".//dc:creator", ns)
+        if el is not None and norm_space(el.text)
+    ]
+    subjects = [
+        norm_space(s.text)
+        for s in opf.findall(".//dc:subject", ns)
+        if s is not None and norm_space(s.text)
+    ]
+
     identifiers = []
     for ide in opf.findall(".//dc:identifier", ns):
         txt = norm_space(ide.text) if ide is not None and ide.text else ""
@@ -517,16 +587,83 @@ def parse_opf(z: zipfile.ZipFile, opf_path: str):
             scheme = ide.attrib.get("{http://www.idpf.org/2007/opf}scheme", "") or ""
             identifiers.append(((scheme.upper() or "ID"), txt))
 
-    mf_items = {}
-    base = str(Path(opf_path).parent)
+    # ---------- manifest ----------
+    mf_items: Dict[str, Tuple[str, Optional[str]]] = {}
     for it in opf.findall(".//{http://www.idpf.org/2007/opf}item"):
         it_id = it.attrib.get("id")
         href = it.attrib.get("href")
         media_type = it.attrib.get("media-type")
         if it_id and href:
-            href_path = str(Path(base) / href) if base not in ("", ".") else href
+            href_path = _resolve_href_relative(opf_path, href)
             mf_items[it_id] = (href_path, media_type)
 
+    # список всех картинок
+    image_items: List[Tuple[str, str, Optional[str]]] = [
+        (it_id, href, media_type)
+        for it_id, (href, media_type) in mf_items.items()
+        if media_type and media_type.startswith("image")
+    ]
+
+    cover_image_href: Optional[str] = None
+
+    # 1) <meta name="cover" content="ID">
+    meta_cover = opf.find(".//{http://www.idpf.org/2007/opf}meta[@name='cover']")
+    if meta_cover is not None:
+        cval = meta_cover.attrib.get("content")
+        if cval:
+            if cval in mf_items:
+                href_path, mtype = mf_items[cval]
+                if mtype and mtype.startswith("image"):
+                    cover_image_href = href_path
+                else:
+                    img_candidate = _find_cover_image_in_html(z, href_path)
+                    if img_candidate:
+                        cover_image_href = img_candidate
+            else:
+                href_path = _resolve_href_relative(opf_path, cval)
+                img_candidate = _find_cover_image_in_html(z, href_path)
+                if img_candidate:
+                    cover_image_href = img_candidate
+
+    # 2) EPUB3: properties="cover-image"
+    if not cover_image_href:
+        for it in opf.findall(".//{http://www.idpf.org/2007/opf}item"):
+            props = it.attrib.get("properties", "")
+            if "cover-image" in props:
+                href = it.attrib.get("href")
+                if href:
+                    href_path = _resolve_href_relative(opf_path, href)
+                    cover_image_href = href_path
+                    break
+
+    # 3) <guide><reference type="cover" href="..."/>
+    if not cover_image_href:
+        guide = opf.find(".//{http://www.idpf.org/2007/opf}guide")
+        if guide is not None:
+            for ref in guide.findall("{http://www.idpf.org/2007/opf}reference"):
+                if ref.attrib.get("type") == "cover":
+                    href = ref.attrib.get("href")
+                    if href:
+                        page_path = _resolve_href_relative(opf_path, href)
+                        img_candidate = _find_cover_image_in_html(z, page_path)
+                        if img_candidate:
+                            cover_image_href = img_candidate
+                            break
+
+    # 4) item с media-type image/* и id/href, содержащим "cover"
+    if not cover_image_href and image_items:
+        for it_id, href, mtype in image_items:
+            key = (it_id or "").lower() + " " + (href or "").lower()
+            if "cover" in key:
+                cover_image_href = href
+                break
+
+    # 5) самая первая картинка в манифесте
+    if not cover_image_href and image_items:
+        _, href, _ = image_items[0]
+        cover_image_href = href
+
+    # ---------- spine ----------
     spine = []
     for itref in opf.findall(".//{http://www.idpf.org/2007/opf}itemref"):
         ref = itref.attrib.get("idref")
@@ -534,9 +671,18 @@ def parse_opf(z: zipfile.ZipFile, opf_path: str):
             spine.append(mf_items[ref])
 
     return {
-        "title": title, "creators": creators, "language": language, "publisher": publisher,
-        "date_raw": date_raw, "description": description, "subjects": subjects,
-        "identifiers": identifiers, "opf_path": opf_path, "manifest": mf_items, "spine": spine
+        "title": title,
+        "creators": creators,
+        "language": language,
+        "publisher": publisher,
+        "date_raw": date_raw,
+        "description": description,
+        "subjects": subjects,
+        "identifiers": identifiers,
+        "opf_path": opf_path,
+        "manifest": mf_items,
+        "spine": spine,
+        "cover_href": cover_image_href,
     }
 
 def parse_date(date_raw: str) -> Optional[str]:
@@ -635,7 +781,9 @@ def _fallback_book_title(file_path: Path, meta_title: Optional[str]) -> str:
         return meta_title
     return Path(file_path).stem
 
-def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: str, idx_content: str):
+def process_epub(conn, file_path: Path, args, es_url: Optional[str],
+                 idx_meta: str, idx_content: str,
+                 export_root: Optional[Path]):
     size_bytes = file_path.stat().st_size
     sha = sha256_file(file_path)
 
@@ -657,6 +805,24 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
             conn.commit()
             return "ok"
 
+        # подготовим директорию для экспорта этой книги
+        book_export_dir: Optional[Path] = None
+        if export_root is not None:
+            book_export_dir = export_root / str(book_id)
+            book_export_dir.mkdir(parents=True, exist_ok=True)
+
+            # сохраним обложку, если нашли
+            cover_href = meta.get("cover_href")
+            if cover_href:
+                try:
+                    cover_bytes = z.read(cover_href)
+                    ext = Path(cover_href).suffix or ".jpg"
+                    cover_path = book_export_dir / f"cover{ext}"
+                    with open(cover_path, "wb") as f:
+                        f.write(cover_bytes)
+                except KeyError:
+                    print(f"[WARN] cover image not found in ZIP: {cover_href}", file=sys.stderr)
+
         # 3) главы
         chapter_ids: List[Optional[int]] = []
         for idx, (href, media_type) in enumerate(meta["spine"], start=1):
@@ -669,7 +835,8 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
             except KeyError:
                 alt = str(Path(Path(meta["opf_path"]).parent) / href)
                 try:
-                    raw = z.read(alt); href = alt
+                    raw = z.read(alt)
+                    href = alt
                 except KeyError:
                     chapter_ids.append(None)
                     continue
@@ -679,9 +846,19 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
                 h = soup.find(["h1", "h2", "title"])
                 chap_title = norm_space(h.get_text()) if h else None
             except Exception:
-                pass
+                html = raw.decode("utf-8", errors="ignore")
+
             cid = insert_chapter(cur, edition_id, idx, chap_title, href)
             chapter_ids.append(cid)
+
+            # сохраняем главу в файл <chapter_id>.xml
+            if book_export_dir is not None and cid is not None:
+                chapter_file = book_export_dir / f"{cid}.xml"
+                try:
+                    with open(chapter_file, "wb") as f:
+                        f.write(raw)
+                except Exception as e:
+                    print(f"[WARN] cannot write chapter {cid} xml: {e}", file=sys.stderr)
 
         # 4) ES: метадок книги
         book_title_for_es = _fallback_book_title(file_path, meta.get("title"))
@@ -724,7 +901,8 @@ def process_epub(conn, file_path: Path, args, es_url: Optional[str], idx_meta: s
             except KeyError:
                 alt = str(Path(Path(meta["opf_path"]).parent) / href)
                 try:
-                    raw = z.read(alt); href = alt
+                    raw = z.read(alt)
+                    href = alt
                 except KeyError:
                     missing += 1
                     if missing <= max_warn:
@@ -850,17 +1028,17 @@ def main():
     ap.add_argument("--es-index-meta", type=str, default="books_meta")
     ap.add_argument("--es-index-content", type=str, default="books_content")
     ap.add_argument("--recreate-es", action="store_true",
-                    help = "Полностью удалить индексы ES (--es-index-meta и --es-index-content) перед созданием")
+                    help="Полностью удалить индексы ES (--es-index-meta и --es-index-content) перед созданием")
     ap.add_argument("--es-no-source", action="store_true", help="Disable _source in content index")
     ap.add_argument("--es-use-templates", action="store_true", help="Create index templates")
     ap.add_argument("--es-dense-vector-dim", type=int, default=1024,
                     help="Размер поля content_vec. 0 — взять размер из модели.")
-
     ap.add_argument("--es-enable-suggest", action="store_true")
 
     # Абзацы и окна
     ap.add_argument("--min-paragraph-words", type=int, default=15)
-    ap.add_argument("--no-join-short-paragraphs", action="store_true",  help="Не склеивать короткие абзацы (по умолчанию склеиваем)")
+    ap.add_argument("--no-join-short-paragraphs", action="store_true",
+                    help="Не склеивать короткие абзацы (по умолчанию склеиваем)")
     ap.add_argument("--para-window-size", type=int, default=2, help=">=1 (1 = без перекрытий)")
     ap.add_argument("--para-window-stride", type=int, default=1, help=">=1 (1 = максимальное перекрытие)")
 
@@ -884,6 +1062,15 @@ def main():
                     help="Не нормализовать эмбеддинги (по умолчанию нормализуем)")
 
     ap.add_argument("--limit", type=int, default=0)
+
+    # Экспорт обложек и глав
+    ap.add_argument(
+        "--export-root",
+        type=str,
+        default="./books_content",
+        help="Директория, куда складывать обложки и главы книг (по book_id)."
+    )
+
     args = ap.parse_args()
 
     if args.create_db:
@@ -898,6 +1085,11 @@ def main():
         pass
 
     skipped_epubs: List[str] = []
+
+    export_root: Optional[Path] = None
+    if args.export_root:
+        export_root = Path(args.export_root).expanduser()
+        export_root.mkdir(parents=True, exist_ok=True)
 
     try:
         if not args.no_es:
@@ -935,8 +1127,15 @@ def main():
 
         for p in tqdm(files, desc="Importing EPUBs"):
             try:
-                status = process_epub(conn, p, args, None if args.no_es else args.es_url,
-                                      args.es_index_meta, args.es_index_content)
+                status = process_epub(
+                    conn,
+                    p,
+                    args,
+                    None if args.no_es else args.es_url,
+                    args.es_index_meta,
+                    args.es_index_content,
+                    export_root,
+                )
                 if status == "skipped":
                     skipped_epubs.append(p.name)
             except Exception as e:
