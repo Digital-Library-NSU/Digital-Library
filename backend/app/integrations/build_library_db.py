@@ -319,7 +319,7 @@ def insert_paragraph_meta(cur, book_id: int, edition_id: int, chapter_id: Option
 
 # ---------------- ES ----------------
 
-def es_request(method: str, url: str, json_body=None, timeout=30):
+def es_request(method: str, url: str, json_body=None, timeout=120):
     r = requests.request(method, url, json=json_body, timeout=timeout)
     if r.status_code >= 400:
         raise RuntimeError(f"ES {method} {url} failed: {r.status_code} {r.text[:500]}")
@@ -422,9 +422,18 @@ def ensure_es_indices(es_url: str, idx_meta: str, idx_content: str,
         return {"_source": {"enabled": store_source}, "dynamic": "false", "properties": props}
 
     if use_templates:
-        tmpl_meta = {"index_patterns": ["books_meta*"],
-                     "template": {"settings": {"analysis": analysis}, "mappings": meta_mappings()},
-                     "priority": 10}
+        tmpl_meta = {
+            "index_patterns": ["books_meta*"],
+            "template": {
+                "settings": {
+                    "number_of_shards": 1,
+                    "number_of_replicas": 0,
+                    "analysis": analysis,
+                },
+                "mappings": meta_mappings(),
+            },
+            "priority": 10,
+        }
         tmpl_content = {"index_patterns": ["books_content*"],
                         "template": {"settings": {"analysis": analysis}, "mappings": content_mappings()},
                         "priority": 10}
@@ -434,7 +443,14 @@ def ensure_es_indices(es_url: str, idx_meta: str, idx_content: str,
     for name, mappings in [(idx_meta, meta_mappings()), (idx_content, content_mappings())]:
         r = requests.get(f"{es_url}/{name}", timeout=15)
         if r.status_code == 404:
-            body = {"settings": {"analysis": analysis}, "mappings": mappings}
+            body = {
+                "settings": {
+                    "number_of_shards": 1,
+                    "number_of_replicas": 0,
+                    "analysis": analysis,
+                },
+                "mappings": mappings,
+            }
             es_request("PUT", f"{es_url}/{name}", body)
         elif r.status_code >= 400:
             raise RuntimeError(f"ES check index {name} failed: {r.status_code} {r.text[:500]}")
