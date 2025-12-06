@@ -19,3 +19,4 @@ class BookDto(BaseModel):
     subjects: str | None
     series: str | None
     cover_path: str | None
+    authors: str
