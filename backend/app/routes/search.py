@@ -1,16 +1,11 @@
-import os
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 
-import requests
-from fastapi import FastAPI, Query, HTTPException, APIRouter
-from fastapi.middleware.cors import CORSMiddleware
-
-import psycopg2
+from fastapi import Query, HTTPException, APIRouter
 
 from app.config import IDX_CONTENT, IDX_META
-from app.database import PG_DSN, get_pg
+from app.integrations.database import get_pg
 from app.integrations.elasticsearch import es_post
-from app.integrations.embed_model import _HAS_ST, encode_query, get_encoder
+from app.integrations.embed_model import _HAS_ST, encode_query
 
 router = APIRouter(prefix="/search")
 

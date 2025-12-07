@@ -20,3 +20,5 @@ EMBED_NORMALIZE = (os.getenv("EMBED_NORMALIZE", "true").lower() in {
                    "1", "true", "yes", "on"})
 EMBED_ADD_QUERY_PREFIX = (os.getenv(
     "EMBED_ADD_QUERY_PREFIX", "true").lower() in {"1", "true", "yes", "on"})
+
+BOOKS_CONTENT_DIR = os.getenv("BOOKS_CONTENT_DIR", "books_content")

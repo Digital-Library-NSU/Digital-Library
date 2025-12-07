@@ -1,6 +1,6 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 
-from app.models.dtos import BookCardDto, BookDto
+from app.dtos.books_dtos import BookCardDto, BookDto
 from datetime import datetime
 
 router = APIRouter(prefix="/books")
