@@ -9,9 +9,9 @@ __pycache__/
 **/*.epub
 
 # локальные папки с моделями
-model/
-models/
-models/**
+integrations/model/
+integrations/models/
+integrations/models/**
 
 # крупные веса/артефакты на всякий
 *.bin

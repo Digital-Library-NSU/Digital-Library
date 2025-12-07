@@ -1,5 +1,6 @@
 from typing import Optional, List, Dict, Any
 
+
 from fastapi import APIRouter, Query, HTTPException
 
 from app.config import IDX_CONTENT, IDX_META
@@ -14,6 +15,7 @@ from app.dtos.search import (
     SemanticHitDTO,
     SemanticResponseDTO,
 )
+
 
 router = APIRouter(prefix="/search")
 

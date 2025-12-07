@@ -1,1 +1,1 @@
-sqlacodegen --generator declarative postgresql://libuser:libpass@localhost:5432/library --outfile app/models.py --options use_inflect
+sqlacodegen --generator declarative postgresql://libuser:libpass@localhost:5432/library --outfile app/db_models.py --options use_inflect

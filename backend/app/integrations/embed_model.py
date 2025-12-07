@@ -6,7 +6,6 @@ except Exception:
     _HAS_ST = False
 
 from app.config import EMBED_ADD_QUERY_PREFIX, EMBED_DEVICE, EMBED_MODEL, EMBED_NORMALIZE
-from app.integrations.build_library_db import tokenize_words
 _encoder: Optional[SentenceTransformer] = None
 _encoder_dim: Optional[int] = None
 
