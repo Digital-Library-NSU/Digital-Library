@@ -4,7 +4,7 @@ from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Query, HTTPException
 
 from app.config import IDX_CONTENT, IDX_META
-from app.database import get_pg
+from app.integrations.database import get_pg
 from app.integrations.elasticsearch import es_post
 from app.integrations.embed_model import _HAS_ST, encode_query
 from app.dtos.search import (
