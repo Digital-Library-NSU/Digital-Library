@@ -1,14 +1,14 @@
+from pathlib import Path
 from typing import Optional, List, Dict, Any
-
 
 from fastapi import APIRouter, Query, HTTPException
 
-from app.config import IDX_CONTENT, IDX_META
+from app.config import IDX_CONTENT, IDX_META, BOOKS_CONTENT_DIR
 from app.integrations.database import get_pg
 from app.integrations.elasticsearch import es_post
 from app.integrations.embed_model import _HAS_ST, encode_query
-from app.dtos.search import (
-    BookCardDTO,
+from app.dtos.books_dtos import BookCardDto
+from app.dtos.search_dtos import (
     SnippetDTO,
     FullTextHitDTO,
     FullTextResponseDTO,
@@ -16,11 +16,89 @@ from app.dtos.search import (
     SemanticResponseDTO,
 )
 
-
 router = APIRouter(prefix="/search")
 
 
-def fetch_books_by_ids(ids: List[int]) -> Dict[int, BookCardDTO]:
+BOOKS_ROOT = Path(BOOKS_CONTENT_DIR).expanduser() if BOOKS_CONTENT_DIR else None
+
+
+def cover_path_for_book(book_id: int) -> Optional[str]:
+    if not BOOKS_ROOT:
+        return None
+
+    base_dir = BOOKS_ROOT / str(book_id)
+    for ext in (".jpg", ".jpeg", ".png", ".webp"):
+        candidate = base_dir / f"cover{ext}"
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+class ParagraphExtra:
+    def __init__(
+        self,
+        book_id: Optional[int],
+        chapter_id: Optional[int],
+        chapter_ord: Optional[int],
+        chapter_title: Optional[str],
+    ):
+        self.book_id = book_id
+        self.chapter_id = chapter_id
+        self.chapter_ord = chapter_ord
+        self.chapter_title = chapter_title
+
+
+def fetch_paragraph_extras(doc_ids: List[str]) -> Dict[str, ParagraphExtra]:
+    if not doc_ids:
+        return {}
+
+    base_map: Dict[str, str] = {}
+    base_ids: List[str] = []
+    for d in doc_ids:
+        parts = d.split(":")
+        if len(parts) >= 4:
+            base = ":".join(parts[:3])
+        else:
+            base = d
+        base_map[d] = base
+        if base not in base_ids:
+            base_ids.append(base)
+
+    conn = get_pg()
+    q = """
+      SELECT
+        cp.es_doc_id,
+        cp.book_id,
+        cp.chapter_id,
+        ec.ord,
+        ec.title
+      FROM content_paragraphs cp
+      LEFT JOIN edition_chapters ec
+        ON ec.id = cp.chapter_id
+      WHERE cp.es_doc_id = ANY(%s)
+    """
+    with conn.cursor() as cur:
+        cur.execute(q, (base_ids,))
+        rows = cur.fetchall()
+
+    by_base: Dict[str, ParagraphExtra] = {}
+    for es_doc_id, book_id, chapter_id, ord_, title in rows:
+        by_base[es_doc_id] = ParagraphExtra(
+            book_id=int(book_id) if book_id is not None else None,
+            chapter_id=int(chapter_id) if chapter_id is not None else None,
+            chapter_ord=int(ord_) if ord_ is not None else None,
+            chapter_title=title,
+        )
+
+    result: Dict[str, ParagraphExtra] = {}
+    for orig, base in base_map.items():
+        extra = by_base.get(base)
+        if extra:
+            result[orig] = extra
+    return result
+
+
+def fetch_books_by_ids(ids: List[int]) -> Dict[int, BookCardDto]:
     if not ids:
         return {}
 
@@ -32,42 +110,32 @@ def fetch_books_by_ids(ids: List[int]) -> Dict[int, BookCardDTO]:
       SELECT
         b.id,
         b.title,
-        b.lang,
-        b.publisher,
-        b.pub_date,
-        b.subjects,
-        COALESCE(json_agg(a.name ORDER BY ba.ord)
-                 FILTER (WHERE a.id IS NOT NULL), '[]') AS author_names,
-        b.description
+        COALESCE(string_agg(a.name, ', ' ORDER BY ba.ord), '') AS authors
       FROM sel
       JOIN books b ON b.id = sel.id
       LEFT JOIN book_authors ba ON ba.book_id = b.id
       LEFT JOIN authors a ON a.id = ba.author_id
-      GROUP BY b.id, b.title, b.lang, b.publisher, b.pub_date, b.subjects, b.description
+      GROUP BY b.id, b.title
     """
 
     with conn.cursor() as cur:
         cur.execute(q, (ids,))
         rows = cur.fetchall()
 
-    by_id: Dict[int, BookCardDTO] = {}
-    for r in rows:
-        bid = int(r[0])
-        card = BookCardDTO(
-            id=bid,
-            title=r[1],
-            lang=r[2],
-            publisher=r[3],
-            pub_year=int(r[4].year) if r[4] else None,
-            subjects=r[5],
-            author_names=r[6] or [],
-            description=r[7],
+    by_id: Dict[int, BookCardDto] = {}
+    for book_id, title, authors in rows:
+        bid = int(book_id)
+        cover_path = cover_path_for_book(bid)
+        by_id[bid] = BookCardDto(
+            book_id=bid,
+            title=title,
+            cover_path=cover_path,
+            authors=authors or "",
         )
-        by_id[bid] = card
     return by_id
 
-def _build_fallback_snippet(content: Optional[str], query: str, max_len: int = 220) -> str:
 
+def _build_fallback_snippet(content: Optional[str], query: str, max_len: int = 220) -> str:
     if not content:
         return ""
 
@@ -77,7 +145,6 @@ def _build_fallback_snippet(content: Optional[str], query: str, max_len: int = 2
 
     q_norm = query.strip()
     if not q_norm:
-        # просто начало текста
         snippet = text[:max_len]
         return snippet + ("…" if len(text) > max_len else "")
 
@@ -86,7 +153,6 @@ def _build_fallback_snippet(content: Optional[str], query: str, max_len: int = 2
 
     idx = low_text.find(low_q)
     if idx == -1:
-        # фраза не нашлась вообще — берём начало
         snippet = text[:max_len]
         return snippet + ("…" if len(text) > max_len else "")
 
@@ -94,7 +160,6 @@ def _build_fallback_snippet(content: Optional[str], query: str, max_len: int = 2
     end = min(len(text), idx + len(q_norm) + 60)
     snippet = text[start:end]
 
-    # подсветка первого вхождения в срезе
     rel_idx = snippet.lower().find(low_q)
     if rel_idx != -1:
         before = snippet[:rel_idx]
@@ -120,41 +185,49 @@ def fulltext_search(
     size: int = Query(10, ge=1, le=50),
     offset: int = Query(0, ge=0),
 ):
-    # ---------- 1. Поиск по метаданным (books_meta) ----------
+    # ---------- 1. Поиск по метаданным ----------
     meta_must: List[Dict[str, Any]] = []
     meta_filter: List[Dict[str, Any]] = []
 
     if q:
-        meta_must.append({
-            "multi_match": {
-                "query": q,
-                "type": "best_fields",
-                "fields": [
-                    "title^4", "title.ru^4", "title.en^3",
-                    "author_names^3", "author_names.ru^3", "author_names.en^2",
-                    "subjects^2",
-                    "description", "description.ru", "description.en",
-                ],
-                "operator": "and",
-                "fuzziness": "AUTO",
-                "prefix_length": 1,
-                "fuzzy_transpositions": True,
+        meta_must.append(
+            {
+                "multi_match": {
+                    "query": q,
+                    "type": "best_fields",
+                    "fields": [
+                        "title^4",
+                        "title.ru^4",
+                        "title.en^3",
+                        "author_names^3",
+                        "author_names.ru^3",
+                        "author_names.en^2",
+                        "subjects^2",
+                        "description",
+                        "description.ru",
+                        "description.en",
+                    ],
+                    "operator": "and",
+                    "fuzziness": "AUTO",
+                    "prefix_length": 1,
+                    "fuzzy_transpositions": True,
+                }
             }
-        })
+        )
 
     if lang:
         meta_filter.append({"term": {"lang": lang}})
 
     meta_body = {
         "from": 0,
-        "size": size,  # берём максимум size книг из метаданных
+        "size": size,
         "query": {
             "bool": {
                 "must": meta_must or [{"match_all": {}}],
                 "filter": meta_filter,
             }
         },
-        "_source": ["book_id"],  # сами дотянем всё из Postgres
+        "_source": ["book_id"],
     }
 
     meta_res = es_post(f"{IDX_META}/_search", meta_body)
@@ -169,12 +242,11 @@ def fulltext_search(
         except (TypeError, ValueError):
             continue
 
-    # ---------- 2. Поиск по цитатам (books_content) ----------
+    # ---------- 2. Поиск по цитатам ----------
     content_filter: List[Dict[str, Any]] = []
     if lang:
         content_filter.append({"term": {"lang": lang}})
 
-    # строгое совпадение фразы + "похожий" матч с опечатками
     phrase_query = {
         "match_phrase": {
             "content": {
@@ -198,7 +270,7 @@ def fulltext_search(
 
     content_body = {
         "from": offset,
-        "size": size,  # именно столько цитат хотим отдать наружу
+        "size": size,
         "query": {
             "bool": {
                 "should": [phrase_query, fuzzy_query],
@@ -219,7 +291,6 @@ def fulltext_search(
                 "content": {
                     "fragment_size": 220,
                     "number_of_fragments": 1,
-                    # главное изменение: строим подсветку только по match_phrase
                     "highlight_query": phrase_query,
                 }
             },
@@ -229,7 +300,7 @@ def fulltext_search(
     content_res = es_post(f"{IDX_CONTENT}/_search", content_body)
     content_hits_raw = content_res.get("hits", {}).get("hits", [])
 
-    # собираем все id книг из обоих запросов
+    # ---------- 3. Дотягиваем карточки книг + extras по параграфам ----------
     all_book_ids: List[int] = []
     all_book_ids.extend(meta_book_ids)
     for h in content_hits_raw:
@@ -242,7 +313,10 @@ def fulltext_search(
     unique_ids = sorted({bid for bid in all_book_ids if isinstance(bid, int)})
     books_by_id = fetch_books_by_ids(unique_ids)
 
-    # ---------- 3. Формируем DTO для хитов из метаданных ----------
+    doc_ids = [h.get("_id") for h in content_hits_raw if h.get("_id")]
+    para_extras = fetch_paragraph_extras(doc_ids)
+
+    # ---------- 4. DTO для хитов из метаданных ----------
     meta_hits: List[FullTextHitDTO] = []
     for h in meta_hits_raw:
         src = h.get("_source", {})
@@ -267,7 +341,7 @@ def fulltext_search(
             )
         )
 
-    # ---------- 4. Формируем DTO для хитов-цитат ----------
+    # ---------- 5. DTO для хитов-цитат ----------
     quote_hits: List[FullTextHitDTO] = []
     for h in content_hits_raw:
         src = h.get("_source", {})
@@ -275,7 +349,7 @@ def fulltext_search(
 
         try:
             bid = int(src.get("book_id"))
-        except (TypeError, ValueError, TypeError):
+        except (TypeError, ValueError):
             continue
 
         book = books_by_id.get(bid)
@@ -286,14 +360,28 @@ def fulltext_search(
         if hl_list:
             snippet_html = hl_list[0]
         else:
-            # fallback: строим сниппет руками
             snippet_html = _build_fallback_snippet(src.get("content"), q)
 
+        doc_id = h.get("_id")
+        extra = para_extras.get(doc_id or "")
+
+        chapter_ord = (
+            extra.chapter_ord
+            if extra and extra.chapter_ord is not None
+            else int(src.get("chapter_ord") or 0)
+        )
+
+        if BOOKS_ROOT and extra and extra.chapter_id is not None:
+            chapter_path = str(BOOKS_ROOT / str(book.book_id) / f"{extra.chapter_id}.xml")
+        else:
+            chapter_path = ""
+
         snippet_dto = SnippetDTO(
-            doc_id=h.get("_id"),
+            doc_id=doc_id or "",
             edition_id=str(src.get("edition_id")),
-            chapter_ord=int(src.get("chapter_ord")),
-            chapter_href=src.get("chapter_href") or "",
+            chapter_ord=chapter_ord,
+            chapter_path=chapter_path,
+            chapter_title=extra.chapter_title if extra else None,
             snippet=snippet_html,
         )
 
@@ -306,17 +394,13 @@ def fulltext_search(
             )
         )
 
-    # ---------- 5. Объединяем, сортируем (meta всегда выше quote) ----------
-    # сортируем внутри групп по score убыванию
+    # ---------- 6. Объединяем и сортируем ----------
     meta_hits_sorted = sorted(meta_hits, key=lambda x: x.score, reverse=True)
     quote_hits_sorted = sorted(quote_hits, key=lambda x: x.score, reverse=True)
 
     all_hits = meta_hits_sorted + quote_hits_sorted
-
-    # total можно трактовать по-разному; здесь — просто количество хитов, что отдали наружу
     total = len(all_hits)
 
-    # отрезаем по size на случай, если meta_hits > size
     all_hits = all_hits[:size]
 
     return FullTextResponseDTO(total=total, hits=all_hits)
@@ -338,7 +422,7 @@ def semantic_search(
     offset: int = Query(0, ge=0),
     num_candidates: Optional[int] = Query(
         None,
-        description="kNN кандидатов перед резкой size; по умолчанию size*50, минимум 100",
+        description="kNN кандидатов перед обрезкой size; по умолчанию size*50, минимум 100",
     ),
 ):
     if not _HAS_ST:
@@ -385,6 +469,10 @@ def semantic_search(
     res = es_post(f"{IDX_CONTENT}/_search", body)
     hits_raw = res.get("hits", {}).get("hits", [])
 
+    # extras по doc_id
+    doc_ids = [h.get("_id") for h in hits_raw if h.get("_id")]
+    para_extras = fetch_paragraph_extras(doc_ids)
+
     book_ids: List[int] = []
     for h in hits_raw:
         src = h.get("_source", {})
@@ -417,11 +505,26 @@ def semantic_search(
 
         snippet_text = _make_snippet(src.get("content"))
 
+        doc_id = h.get("_id")
+        extra = para_extras.get(doc_id or "")
+
+        chapter_ord = (
+            extra.chapter_ord
+            if extra and extra.chapter_ord is not None
+            else int(src.get("chapter_ord") or 0)
+        )
+
+        if BOOKS_ROOT and extra and extra.chapter_id is not None:
+            chapter_path = str(BOOKS_ROOT / str(book.book_id) / f"{extra.chapter_id}.xml")
+        else:
+            chapter_path = ""
+
         snippet_dto = SnippetDTO(
-            doc_id=h.get("_id"),
+            doc_id=doc_id or "",
             edition_id=str(src.get("edition_id")),
-            chapter_ord=int(src.get("chapter_ord")),
-            chapter_href=src.get("chapter_href") or "",
+            chapter_ord=chapter_ord,
+            chapter_path=chapter_path,
+            chapter_title=extra.chapter_title if extra else None,
             snippet=snippet_text or "",
         )
 
