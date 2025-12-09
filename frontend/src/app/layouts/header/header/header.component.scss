@@ -1,9 +1,34 @@
 .header {
-    &_logo-title {
+    &__container {
+        display: flex;
+        justify-content: space-between;
+        padding: 0 1rem;
+        width: 100%;
+        background-color: var(--light-color);
+    }
+
+    &__logo {
+        display: flex;
+        flex-direction: row;
+        gap: 10px;
+    }
+
+    &__logo-title {
         font-family: "EirikRaude", "Courier New", Courier, monospace;
-        font-size: 50px;
+        font-size: var(--text-display-4-font-size);
         letter-spacing: 2px;
         font-weight: 700;
-        color: #442d1e;
+        color: var(--primary-text-color);
+    }
+
+    &__buttons {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    &__button {
+        background-color: unset;
+        border: none;
     }
 }
