@@ -1,13 +1,14 @@
 import { CommonModule } from '@angular/common';
 import { Component, inject } from '@angular/core';
 import { BookCardComponent } from './components/book-card/book-card.component';
-import { BookCard } from '../../shared/models/book.model';
+import { Book, BookCard } from '../../shared/models/book.model';
 import { BookDataService } from '../../core/services/book-data.service';
 import { finalize } from 'rxjs/operators';
+import { BookDetailsModalComponent } from './components/book-details-modal/book-details-modal.component';
 
 @Component({
     selector: 'app-catalog',
-    imports: [CommonModule, BookCardComponent],
+    imports: [CommonModule, BookCardComponent, BookDetailsModalComponent],
     templateUrl: './catalog.component.html',
     styleUrl: './catalog.component.scss',
 })
@@ -17,6 +18,8 @@ export class CatalogComponent {
     books: BookCard[] = [];
     isLoading = true;
     error = '';
+    selectedBook: Book | null = null;
+    isDetailsLoading = false;
 
     limit = 12;
     offset = 0;
@@ -41,5 +44,23 @@ export class CatalogComponent {
                     this.error = 'Failed to load books';
                 },
             });
+    }
+
+    openBookDetails(bookId: number) {
+        this.isDetailsLoading = true;
+
+        this.bookService
+            .getBookById(bookId)
+            .pipe(finalize(() => (this.isDetailsLoading = false)))
+            .subscribe({
+                next: (details) => {
+                    this.selectedBook = details;
+                },
+                error: (err) => console.error('Error fetching details', err),
+            });
+    }
+
+    closeDetails() {
+        this.selectedBook = null;
     }
 }

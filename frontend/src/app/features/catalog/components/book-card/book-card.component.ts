@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, Input } from '@angular/core';
+import { Component, EventEmitter, Input, Output } from '@angular/core';
 import { BookCard } from '../../../../shared/models/book.model';
 
 @Component({
@@ -10,4 +10,10 @@ import { BookCard } from '../../../../shared/models/book.model';
 })
 export class BookCardComponent {
     @Input({ required: true }) book!: BookCard;
+    @Output() details = new EventEmitter<number>();
+
+    onDetailsClick(event: Event) {
+        event.stopPropagation();
+        this.details.emit(this.book.book_id);
+    }
 }

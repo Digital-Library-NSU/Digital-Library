@@ -55,3 +55,20 @@ img {
     font-size: 0.85rem;
     color: #666;
 }
+
+.details-btn {
+    margin-top: 8px;
+    width: 100%;
+    padding: 8px;
+    background: transparent;
+    border: 1px solid #3498db;
+    color: #3498db;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+
+    &:hover {
+        background: #3498db;
+        color: white;
+    }
+}

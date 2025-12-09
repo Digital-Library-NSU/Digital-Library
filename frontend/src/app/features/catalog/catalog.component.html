@@ -23,15 +23,21 @@
     @if (books.length > 0) {
     <div class="books-grid">
         @for (book of books; track book.book_id) {
-        <app-book-card [book]="book"></app-book-card>
+        <app-book-card [book]="book" (details)="openBookDetails($event)"></app-book-card>
         }
     </div>
     }
-
     @else {
     <div class="empty-state">
         <p>No books found in the archives.</p>
     </div>
     }
+    }
+    @if (selectedBook) {
+    <app-book-details-modal [book]="selectedBook" (close)="closeDetails()">
+    </app-book-details-modal>
+    }
+    @if (isDetailsLoading) {
+    <div class="overlay-loader">Opening book...</div>
     }
 </div>
