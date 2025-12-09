@@ -15,13 +15,13 @@
 
             <div class="info-column">
                 <h2>{{ book.title }}</h2>
-                <p class="author">by {{ book.authors }}</p>
+                <p class="author">Автор: {{ book.authors }}</p>
 
                 <div class="meta-grid">
-                    @if (book.series) { <div><strong>Series:</strong> {{ book.series }}</div> }
-                    @if (book.publisher) { <div><strong>Publisher:</strong> {{ book.publisher }}</div> }
-                    @if (book.pub_date) { <div><strong>Date:</strong> {{ book.pub_date }}</div> }
-                    @if (book.lang) { <div><strong>Language:</strong> {{ book.lang }}</div> }
+                    @if (book.series) { <div><strong>Серия:</strong> {{ book.series }}</div> }
+                    @if (book.publisher) { <div><strong>Издательство:</strong> {{ book.publisher }}</div> }
+                    @if (book.pub_date) { <div><strong>Дата:</strong> {{ book.pub_date }}</div> }
+                    @if (book.lang) { <div><strong>Язык:</strong> {{ book.lang }}</div> }
                 </div>
 
                 @if (book.subjects) {
@@ -32,7 +32,7 @@
 
                 @if (book.description) {
                 <div class="description">
-                    <h3>Synopsis</h3>
+                    <h3>Описание</h3>
                     <p [innerHTML]="book.description"></p>
                 </div>
                 }

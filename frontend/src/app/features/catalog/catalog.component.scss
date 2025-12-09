@@ -5,6 +5,14 @@
     min-height: 90vh;
 }
 
+h1,
+button,
+p,
+span,
+div {
+    font-family: "EirikRaude", "Courier New", Courier, monospace;
+}
+
 .catalog-header {
     text-align: left;
     margin-bottom: 1rem;
@@ -17,13 +25,7 @@
         margin-bottom: 0.5rem;
     }
 
-    p {
-        color: #7f8c8d;
-        font-size: 1.1rem;
-    }
-
     .add-book-btn {
-        margin-top: 1.5rem;
         background: transparent;
         border: 1px solid #7f8c8d;
         color: #555;
@@ -31,13 +33,12 @@
         border-radius: 20px;
         cursor: pointer;
         transition: all 0.3s;
-        font-family: inherit;
-        font-size: 0.9rem;
+        font-size: 1.2rem;
 
         &:hover {
-            background: #2c3e50;
+            background: var(--primary-text-color);
             color: white;
-            border-color: #2c3e50;
+            border-color: var(--primary-text-color);
         }
     }
 }
@@ -54,7 +55,7 @@
     align-items: center;
     justify-content: center;
     height: 300px;
-    color: #7f8c8d;
+    color: #4e371e;
 }
 
 .spinner {
@@ -74,6 +75,8 @@
 }
 
 .error-message {
+    letter-spacing: 1px;
+    font-size: 1.5rem;
     text-align: center;
     color: #e74c3c;
     background: rgba(231, 76, 60, 0.1);
@@ -86,6 +89,7 @@
         margin-top: 1rem;
         padding: 8px 16px;
         cursor: pointer;
+        letter-spacing: 1px;
     }
 }
 

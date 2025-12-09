@@ -1,4 +1,7 @@
 .card {
+    flex-direction: column;
+    display: flex;
+    height: 420px;
     background: rgba(255, 255, 255, 0.6);
     backdrop-filter: blur(10px);
     border-radius: 16px;
@@ -40,10 +43,17 @@ img {
     font-size: 0.8rem;
 }
 
+.info {
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+}
+
 .title {
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
     margin: 0 0 4px 0;
     font-size: 1rem;
-    font-weight: 600;
+    font-weight: 400;
     color: #333;
     white-space: nowrap;
     overflow: hidden;
@@ -57,18 +67,19 @@ img {
 }
 
 .details-btn {
-    margin-top: 8px;
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+    margin-top: auto;
     width: 100%;
     padding: 8px;
     background: transparent;
-    border: 1px solid #3498db;
-    color: #3498db;
+    border: 1px solid var(--primary-text-color);
+    color: var(--primary-text-color);
     border-radius: 4px;
     cursor: pointer;
     transition: all 0.2s;
 
     &:hover {
-        background: #3498db;
+        background: var(--primary-text-color);
         color: white;
     }
 }

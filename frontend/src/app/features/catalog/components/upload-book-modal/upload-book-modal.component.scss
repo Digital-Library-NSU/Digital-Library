@@ -40,7 +40,7 @@ input[type="file"] {
 }
 
 .upload-btn {
-    background: #3498db;
+    background: var(--primary-text-color);
     color: white;
     border: none;
     padding: 12px 24px;
@@ -55,11 +55,20 @@ input[type="file"] {
         cursor: not-allowed;
     }
     &:hover:not(:disabled) {
-        background: #2980b9;
+        background: var(--primary-hover-color);
     }
     &.success {
         background: #27ae60;
     }
+}
+
+h3,
+h2,
+p,
+strong,
+span,
+div {
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
 }
 
 .error-alert {
