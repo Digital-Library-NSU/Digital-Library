@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 
 from app.dtos.books_dtos import BookCardDto, BookDto
 from app.integrations.database import get_db_session
@@ -76,3 +76,77 @@ def get_book_by_id(book_id: int) -> BookDto:
             cover_path=_get_cover_path(book.id),
             authors=", ".join([ba.author.name for ba in book.book_authors if ba.author]),
         )
+
+@router.post("/upload")
+def upload_book(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith(".epub"):
+        raise HTTPException(status_code=400, detail="Требуется EPUB файл")
+
+    tmp_path = Path("/tmp") / file.filename
+    content = file.file.read()
+    tmp_path.write_bytes(content)
+
+    export_root_path = Path(BOOKS_CONTENT_DIR).expanduser()
+    export_root_path.mkdir(parents=True, exist_ok=True)
+
+    args = Namespace(
+        # Postgres
+        dsn=PG_DSN,
+        root="---",
+        create_db=False,
+        recreate_schema=False,
+
+        # Elasticsearch
+        no_es=False,
+        es_url=ES_URL,
+        es_index_meta=IDX_META,
+        es_index_content=IDX_CONTENT,
+        recreate_es=False,
+        es_no_source=False,
+        es_use_templates=False,
+        es_dense_vector_dim=1024,
+        es_enable_suggest=False,
+
+        # абзацы/окна
+        min_paragraph_words=15,
+        no_join_short_paragraphs=False,
+        para_window_size=2,
+        para_window_stride=1,
+
+        # битые EPUB
+        max_missing_spine=50,
+        warn_cap=5,
+
+        # эмбеддинги
+        embed_model=EMBED_MODEL,
+        embed_device=EMBED_DEVICE,
+        embed_batch_size=64,
+        embed_max_words=256,
+        embed_overlap_words=32,
+        no_embed_normalize=not EMBED_NORMALIZE,
+
+        # лимит
+        limit=0,
+
+        # экспорт
+        export_root=BOOKS_CONTENT_DIR,
+    )
+
+    try:
+        status = process_epub(
+            conn=get_pg(),
+            file_path=tmp_path,
+            args=args,
+            es_url=None if args.no_es else args.es_url,
+            idx_meta=args.es_index_meta,
+            idx_content=args.es_index_content,
+            export_root=export_root_path,
+        )
+        return {"status": status}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка обработки EPUB: {e}")
+
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
