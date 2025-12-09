@@ -14,6 +14,8 @@ PG_DSN = os.getenv("PG_DSN") or os.getenv("DSN")
 if not PG_DSN:
     PG_DSN = ""
 
+print("PG DSN: ", PG_DSN)
+
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
 EMBED_DEVICE = os.getenv("EMBED_DEVICE", "auto")
 EMBED_NORMALIZE = (os.getenv("EMBED_NORMALIZE", "true").lower() in {
