@@ -1,0 +1,37 @@
+<div class="catalog-container">
+
+    <header class="catalog-header">
+        <h1>Каталог</h1>
+    </header>
+
+    @if (error) {
+    <div class="error-message">
+        <p>{{ error }}</p>
+        <button (click)="loadBooks()">Retry</button>
+    </div>
+    }
+
+    @if (isLoading) {
+    <div class="loader-container">
+        <div class="spinner"></div>
+        <p>Loading books...</p>
+    </div>
+    }
+
+    @if (!isLoading && !error) {
+
+    @if (books.length > 0) {
+    <div class="books-grid">
+        @for (book of books; track book.book_id) {
+        <app-book-card [book]="book"></app-book-card>
+        }
+    </div>
+    }
+
+    @else {
+    <div class="empty-state">
+        <p>No books found in the archives.</p>
+    </div>
+    }
+    }
+</div>

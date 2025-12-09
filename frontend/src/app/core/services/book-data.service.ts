@@ -9,7 +9,10 @@ import { BookCard } from '../../shared/models/book.model';
 export class BookDataService {
     private api = inject(ApiService);
 
-    getAllBooks(limit: number = 10, offset: number = 0): Observable<BookCard> {
-        return this.api.get<BookCard>('/books/all', { limit, offset });
+    getAllBooks(
+        limit: number = 10,
+        offset: number = 0
+    ): Observable<BookCard[]> {
+        return this.api.get<BookCard[]>('/books/all', { limit, offset });
     }
 }

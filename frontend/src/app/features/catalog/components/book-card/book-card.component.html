@@ -1,0 +1,15 @@
+<div class="card">
+    <div class="cover-wrapper">
+        @if (book.cover_path) {
+        <img [src]="book.cover_path" [alt]="book.title" loading="lazy">
+        } @else {
+        <div class="placeholder-cover">
+            <span>No Cover</span>
+        </div>
+        }
+    </div>
+    <div class="info">
+        <h3 class="title" [title]="book.title">{{ book.title }}</h3>
+        <p class="author">{{ book.authors }}</p>
+    </div>
+</div>
