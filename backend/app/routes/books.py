@@ -6,9 +6,26 @@ from app.integrations.database import get_db_session
 from sqlalchemy import select
 
 from app.models.db.book import Book
+from app.config import BOOKS_CONTENT_DIR
+from pathlib import Path
 
 router = APIRouter(prefix="/books")
 
+
+def _get_cover_path(book_id: int) -> str | None:
+    if not BOOKS_CONTENT_DIR:
+        return None
+
+    base_dir = Path(BOOKS_CONTENT_DIR) / str(book_id)
+    if not base_dir.exists():
+        return None
+
+    for ext in (".jpg", ".jpeg", ".png", ".webp"):
+        candidate = base_dir / f"cover{ext}"
+        if candidate.exists():
+            return str(candidate)
+
+    return None
 
 @router.get("/all")
 def get_all_books(limit: int | None = None, offset: int = 0) -> list[BookCardDto]:
@@ -17,13 +34,13 @@ def get_all_books(limit: int | None = None, offset: int = 0) -> list[BookCardDto
         if limit is not None:
             stmt.limit(limit)
 
-        result = []
+        result: list[BookCardDto] = []
         for book in db_session.execute(stmt).scalars():
             result.append(
                 BookCardDto(
                     book_id=book.id,
                     title=book.title,
-                    cover_path=None,
+                    cover_path=_get_cover_path(book.id),
                     authors=", ".join([author.author.name for author in book.book_authors])))
 
         return result
@@ -45,5 +62,5 @@ def get_book_by_id(book_id: int) -> BookDto:
             subjects=None if book.subjects is None else ", ".join(
                 book.subjects),
             series=book.series,
-            cover_path=None,
+            cover_path=_get_cover_path(book.id),
             authors=", ".join([author.author.name for author in book.book_authors]))
