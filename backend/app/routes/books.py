@@ -8,6 +8,18 @@ from sqlalchemy.orm import selectinload
 from app.integrations.orm import Book, BookAuthor
 from app.config import BOOKS_CONTENT_DIR
 from pathlib import Path
+from app.integrations.database import get_pg
+from argparse import Namespace
+from app.config import (
+    PG_DSN,
+    ES_URL,
+    IDX_META,
+    IDX_CONTENT,
+    EMBED_MODEL,
+    EMBED_DEVICE,
+    EMBED_NORMALIZE,
+    BOOKS_CONTENT_DIR,
+)
 
 router = APIRouter(prefix="/books")
 
