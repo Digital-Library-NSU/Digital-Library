@@ -127,27 +127,51 @@ python build_library_db.py \
    * SSL: Disabled
 3. Test Connection → Finish.   
 
-## 7) Запуск бекенда и примеры запросов в Postman
+## 7) Запуск бекенда и примеры запросов 
 ```
-uvicorn app:app --reload --port 8000
+uvicorn app.main:app --reload #из папки backend
 ```
 
 Проверка:
 ```
-GET http://localhost:8000/health
+curl http://localhost:8000/health
 ```
 Поиск по названию:
 ```
-GET http://localhost:8000/books/search?q=Анна%20Коренина&size=5
+curl -G 'http://localhost:8000/search/fulltext' \
+  --data-urlencode 'q=Избраные' \
+  --data-urlencode 'size=10' \
+  --data-urlencode 'offset=0' | jq
 ```
-(ошибка в фамилии специально - найдет)
 
 Поиск по цитате:
 ```
-GET http://localhost:8000/quotes/search?q=Все%20смешалось%20в%20доме%20Облонских&slop=2&size=5
+curl -G 'http://localhost:8000/search/fulltext' \
+  --data-urlencode 'q=Живите счастливо' \
+  --data-urlencode 'size=10' \
+  --data-urlencode 'offset=0' | jq
 ```
 
 Семантический поиск:
 ```
-GET http://localhost:8000/semantic/search?q=книга%20про%20женщину&size=5
+curl -G 'http://localhost:8000/search/semantic' \
+  --data-urlencode 'q=про пагоду' \
+  --data-urlencode 'size=10' \
+  --data-urlencode 'offset=0' | jq
+```
+
+Список книг
+```
+curl "http://localhost:8000/books/all" | jq
+```
+
+Карточка книги
+```
+curl "http://localhost:8000/books/1" | jq
+```
+
+Загруузка книги
+```
+curl -X POST "http://localhost:8000/books/upload" \
+  -F "file=@<путь к epub>"
 ```
