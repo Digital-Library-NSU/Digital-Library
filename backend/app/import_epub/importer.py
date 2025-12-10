@@ -1,0 +1,465 @@
+import hashlib
+import json
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import psycopg2
+import zipfile
+from bs4 import BeautifulSoup
+
+import torch
+from sentence_transformers import SentenceTransformer
+
+from .text_utils import (
+    html_to_paragraph_blocks,
+    coalesce_short_paragraphs,
+    paragraph_windows,
+    tokenize_words,
+)
+from .epub_parse import parse_container_and_opf, parse_opf
+from .es_support import ensure_es_indices, es_bulk_safe
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# ---------- Embedding helpers ----------
+
+def get_encoder(model_name: Optional[str], device_mode: str = "auto"):
+    if not model_name:
+        return None, 0, "cpu"
+    if SentenceTransformer is None:
+        raise RuntimeError("sentence-transformers не установлен. pip install sentence-transformers")
+
+    dev = "cpu"
+    if device_mode == "auto":
+        if torch is not None and torch.cuda.is_available():
+            dev = "cuda"
+        elif torch is not None and getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            dev = "mps"
+        else:
+            dev = "cpu"
+    elif device_mode in ("cpu", "cuda", "mps"):
+        dev = device_mode
+    else:
+        dev = "cpu"
+
+    enc = SentenceTransformer(model_name, device=dev)
+    try:
+        test = enc.encode(["test"], normalize_embeddings=False)
+        dim = len(test[0])
+    except Exception:
+        dim = enc.get_sentence_embedding_dimension()
+    print(f"[INFO] Embedding model: {model_name}, dim={dim}, device={dev}")
+    return enc, dim, dev
+
+
+def parse_date(date_raw: str) -> Optional[str]:
+    if not date_raw:
+        return None
+    fmts = ["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m", "%Y"]
+    for fmt in fmts:
+        try:
+            dt = datetime.strptime(date_raw[: len(fmt)], fmt)
+            return dt.date().isoformat()
+        except Exception:
+            continue
+    return None
+
+
+def upsert_author(cur, name: str) -> int:
+    cur.execute(
+        "INSERT INTO authors (name) VALUES (%s) "
+        "ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name "
+        "RETURNING id",
+        (name,),
+    )
+    return cur.fetchone()[0]
+
+
+def find_or_insert_book(cur, meta, subjects_list: List[str]) -> int:
+    for scheme, value in meta["identifiers"]:
+        cur.execute("SELECT book_id FROM book_identifiers WHERE scheme=%s AND value=%s", (scheme, value))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+    cur.execute(
+        """
+        INSERT INTO books (title, sort_title, lang, description, publisher, pub_date, subjects, series, meta)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        RETURNING id
+        """,
+        (
+            meta["title"],
+            meta["title"],
+            meta["language"],
+            meta["description"],
+            meta["publisher"],
+            parse_date(meta["date_raw"]),
+            subjects_list if subjects_list else None,
+            None,
+            json.dumps({"identifiers": meta["identifiers"], "opf_path": meta["opf_path"]}, ensure_ascii=False),
+        ),
+    )
+    book_id = cur.fetchone()[0]
+    for i, raw in enumerate(meta["creators"]):
+        aid = upsert_author(cur, raw)
+        cur.execute(
+            "INSERT INTO book_authors (book_id, author_id, role, ord) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+            (book_id, aid, "author", i),
+        )
+    for scheme, value in meta["identifiers"]:
+        cur.execute(
+            "INSERT INTO book_identifiers (book_id, scheme, value) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+            (book_id, scheme, value),
+        )
+    return book_id
+
+
+def insert_or_get_edition(
+    cur, book_id: int, storage_key: str, size_bytes: int, sha256: str, opf_path: str
+) -> Optional[int]:
+    cur.execute("SELECT id FROM editions WHERE sha256=%s", (sha256,))
+    row = cur.fetchone()
+    if row:
+        return row[0]
+    cur.execute(
+        """
+        INSERT INTO editions (book_id, format, storage_key, size_bytes, sha256, drm, opf_path)
+        VALUES (%s,'EPUB',%s,%s,%s,false,%s)
+        RETURNING id
+        """,
+        (book_id, storage_key, size_bytes, sha256, opf_path),
+    )
+    return cur.fetchone()[0]
+
+
+def insert_chapter(cur, edition_id: int, ord_: int, title: Optional[str], href: str) -> int:
+    cur.execute(
+        """
+        INSERT INTO edition_chapters (edition_id, ord, title, href)
+        VALUES (%s,%s,%s,%s) RETURNING id
+        """,
+        (edition_id, ord_, title or None, href),
+    )
+    return cur.fetchone()[0]
+
+
+def insert_paragraph_meta(
+    cur,
+    book_id: int,
+    edition_id: int,
+    chapter_id: Optional[int],
+    para_start: int,
+    para_end: int,
+    window_size: int,
+    tokens_from: int,
+    tokens_to: int,
+    es_index: str,
+    es_doc_id: str,
+    lang: Optional[str],
+    para_type: Optional[str],
+    is_heading: Optional[bool],
+):
+    cur.execute(
+        """
+        INSERT INTO content_paragraphs
+          (book_id, edition_id, chapter_id, para_start, para_end, window_size,
+           tokens_from, tokens_to, es_index, es_doc_id, lang, para_type, is_heading)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (es_doc_id) DO NOTHING
+    """,
+        (
+            book_id,
+            edition_id,
+            chapter_id,
+            para_start,
+            para_end,
+            window_size,
+            tokens_from,
+            tokens_to,
+            es_index,
+            es_doc_id,
+            lang,
+            para_type,
+            is_heading,
+        ),
+    )
+
+
+def _fallback_book_title(file_path: Path, meta_title: Optional[str]) -> str:
+    if meta_title and meta_title.strip():
+        return meta_title
+    return Path(file_path).stem
+
+
+def process_epub(
+    conn,
+    file_path: Path,
+    args,
+    es_url: Optional[str],
+    idx_meta: str,
+    idx_content: str,
+    export_root: Optional[Path],
+):
+    size_bytes = file_path.stat().st_size
+    sha = sha256_file(file_path)
+
+    print(f"[INFO] Processing EPUB: {file_path.name}")
+
+    with zipfile.ZipFile(file_path, "r") as z, conn.cursor() as cur:
+        # 1) OPF
+        try:
+            opf_path = parse_container_and_opf(z)
+            meta = parse_opf(z, opf_path)
+        except Exception as e:
+            print(f"[WARN] {file_path.name}: OPF parse failed: {e}", file=sys.stderr)
+            return "skipped"
+
+        # 2) книга + издание
+        book_id = find_or_insert_book(cur, meta, meta["subjects"])
+        edition_id = insert_or_get_edition(cur, book_id, str(file_path), size_bytes, sha, meta["opf_path"])
+        if not edition_id:
+            conn.commit()
+            return "ok"
+
+        # подготовка директории экспорта
+        book_export_dir: Optional[Path] = None
+        if export_root is not None:
+            book_export_dir = export_root / str(book_id)
+            book_export_dir.mkdir(parents=True, exist_ok=True)
+
+            cover_href = meta.get("cover_href")
+            if cover_href:
+                try:
+                    cover_bytes = z.read(cover_href)
+                    ext = Path(cover_href).suffix or ".jpg"
+                    cover_path = book_export_dir / f"cover{ext}"
+                    with open(cover_path, "wb") as f:
+                        f.write(cover_bytes)
+                except KeyError:
+                    print(f"[WARN] cover image not found in ZIP: {cover_href}", file=sys.stderr)
+
+        # 3) главы
+        chapter_ids: List[Optional[int]] = []
+        for idx, (href, media_type) in enumerate(meta["spine"], start=1):
+            if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
+                chapter_ids.append(None)
+                continue
+            chap_title = None
+            try:
+                raw = z.read(href)
+            except KeyError:
+                alt = str(Path(Path(meta["opf_path"]).parent) / href)
+                try:
+                    raw = z.read(alt)
+                    href = alt
+                except KeyError:
+                    chapter_ids.append(None)
+                    continue
+            try:
+                html = raw.decode("utf-8", errors="ignore")
+                soup = BeautifulSoup(html, "lxml")
+                h = soup.find(["h1", "h2", "title"])
+                chap_title = (h.get_text() if h else None) if h else None
+                if chap_title:
+                    chap_title = chap_title.strip()
+            except Exception:
+                html = raw.decode("utf-8", errors="ignore")
+
+            cid = insert_chapter(cur, edition_id, idx, chap_title, href)
+            chapter_ids.append(cid)
+
+            # сохранить главу как <chapter_id>.xml
+            if book_export_dir is not None and cid is not None:
+                chapter_file = book_export_dir / f"{cid}.xml"
+                try:
+                    with open(chapter_file, "wb") as f:
+                        f.write(raw)
+                except Exception as e:
+                    print(f"[WARN] cannot write chapter {cid} xml: {e}", file=sys.stderr)
+
+        # 4) ES: метадок книги
+        book_title_for_es = _fallback_book_title(file_path, meta.get("title"))
+        if not args.no_es:
+            authors = meta["creators"]
+            pub_year = None
+            pd = parse_date(meta["date_raw"])
+            if pd:
+                try:
+                    pub_year = int(pd[:4])
+                except Exception:
+                    pub_year = None
+            meta_doc = {
+                "book_id": str(book_id),
+                "title": book_title_for_es,
+                "author_names": authors or [],
+                "subjects": meta["subjects"] or [],
+                "publisher": meta["publisher"] or "",
+                "lang": meta["language"] or "",
+                "pub_year": pub_year,
+                "description": meta["description"] or "",
+            }
+        else:
+            meta_doc = {}
+
+        # 5) ES: контент
+        content_docs: List[Dict] = []
+        texts_for_embed: List[str] = []
+        words_running = 0
+
+        missing = 0
+        max_warn = getattr(args, "warn_cap", 5)
+        max_missing_spine = getattr(args, "max_missing_spine", 50)
+
+        for c_idx, (href, media_type) in enumerate(meta["spine"], start=1):
+            if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
+                continue
+            try:
+                raw = z.read(href)
+            except KeyError:
+                alt = str(Path(Path(meta["opf_path"]).parent) / href)
+                try:
+                    raw = z.read(alt)
+                    href = alt
+                except KeyError:
+                    missing += 1
+                    if missing <= max_warn:
+                        print(f"[WARN] missing spine resource {href}", file=sys.stderr)
+                    if missing > max_missing_spine:
+                        print(
+                            f"[WARN] too many missing spine resources ({missing}) → skip content for {file_path.name}",
+                            file=sys.stderr,
+                        )
+                        conn.commit()
+                        return "skipped"
+                    continue
+
+            html = raw.decode("utf-8", errors="ignore")
+            chapter_id = chapter_ids[c_idx - 1]
+
+            blocks = html_to_paragraph_blocks(html)
+            if not args.no_join_short_paragraphs:
+                blocks = coalesce_short_paragraphs(blocks, args.min_paragraph_words)
+
+            para_token_counts = [len(tokenize_words(txt)) for kind, txt in blocks]
+            prefix = [0]
+            for c in para_token_counts:
+                prefix.append(prefix[-1] + c)
+
+            wins = paragraph_windows(blocks, args.para_window_size, args.para_window_stride)
+
+            base_offset = words_running
+            for (start, end, win_blocks) in wins:
+                win_texts = [t for _, t in win_blocks]
+                win_kinds = [k for k, _ in win_blocks]
+                para_text = "\n\n".join(win_texts)
+                if not para_text.strip():
+                    continue
+
+                is_head = any(k == "heading" for k in win_kinds)
+                kind_first = win_kinds[0] if win_kinds else "paragraph"
+
+                w_from = base_offset + prefix[start]
+                w_to = base_offset + prefix[end + 1]
+
+                base_doc_id = f"{edition_id}:{c_idx}:{start}"
+
+                subtexts = [para_text]
+                if args.embed_model and args.embed_max_words > 0:
+                    from .text_utils import split_by_words
+
+                    subtexts = split_by_words(para_text, args.embed_max_words, args.embed_overlap_words)
+
+                for k, chunk_text in enumerate(subtexts):
+                    doc_id = base_doc_id if k == 0 and len(subtexts) == 1 else f"{base_doc_id}:{k}"
+                    content_docs.append(
+                        {
+                            "_id": doc_id,
+                            "book_id": str(book_id),
+                            "edition_id": str(edition_id),
+                            "chapter_ord": c_idx,
+                            "chapter_href": href,
+                            "lang": meta["language"] or "",
+                            "title": book_title_for_es,
+                            "content": chunk_text,
+                            "length": len(chunk_text),
+                            "para_start": start,
+                            "para_end": end,
+                            "window_size": end - start + 1,
+                            "is_heading": is_head,
+                            "para_type": kind_first,
+                            "subchunk_idx": k if len(subtexts) > 1 else 0,
+                        }
+                    )
+                    if args.embed_model:
+                        texts_for_embed.append(chunk_text)
+
+                insert_paragraph_meta(
+                    cur,
+                    book_id,
+                    edition_id,
+                    chapter_id,
+                    start,
+                    end,
+                    end - start + 1,
+                    w_from,
+                    w_to,
+                    idx_content,
+                    base_doc_id,
+                    meta["language"] or None,
+                    para_type=kind_first,
+                    is_heading=is_head,
+                )
+
+            words_running += prefix[-1]
+
+        if missing > 0:
+            print(f"[WARN] missing spine resources total: {missing} (file: {file_path.name})", file=sys.stderr)
+
+        # 6) эмбеддинги
+        if args.embed_model:
+            enc, enc_dim, enc_dev = get_encoder(args.embed_model, device_mode=args.embed_device)
+            if args.es_dense_vector_dim <= 0:
+                ensure_es_indices(
+                    args.es_url,
+                    idx_meta,
+                    idx_content,
+                    store_source=not args.es_no_source,
+                    use_templates=args.es_use_templates,
+                    dense_vec_dim=enc_dim,
+                    enable_suggest=args.es_enable_suggest,
+                )
+            elif args.es_dense_vector_dim != enc_dim:
+                print(
+                    f"[WARN] es-dense-vector-dim ({args.es_dense_vector_dim}) != model dim ({enc_dim}). "
+                    f"Лучше выровнять. Пишу как есть, но ES маппинг должен совпадать.",
+                    file=sys.stderr,
+                )
+
+            batch = args.embed_batch_size
+            vecs: List[List[float]] = []
+            for i in range(0, len(texts_for_embed), batch):
+                chunk = texts_for_embed[i : i + batch]
+                embs = enc.encode(chunk, normalize_embeddings=not args.no_embed_normalize, convert_to_numpy=True)
+                vecs.extend(embs.tolist())
+
+            vi = 0
+            for d in content_docs:
+                if args.embed_model:
+                    d["content_vec"] = vecs[vi]
+                    vi += 1
+
+        # 7) commit + bulk
+        conn.commit()
+        if not args.no_es:
+            es_bulk_safe(args.es_url, idx_meta, idx_content, meta_doc, content_docs)
+        conn.commit()
+        return "ok"
