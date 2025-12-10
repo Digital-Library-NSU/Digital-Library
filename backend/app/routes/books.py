@@ -32,7 +32,7 @@ def get_all_books(limit: int | None = None, offset: int = 0) -> list[BookCardDto
     with get_db_session() as db_session:
         stmt = select(Book).offset(offset)
         if limit is not None:
-            stmt.limit(limit)
+            stmt = stmt.limit(limit)
 
         result: list[BookCardDto] = []
         for book in db_session.execute(stmt).scalars():
