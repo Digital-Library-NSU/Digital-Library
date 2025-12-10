@@ -96,24 +96,13 @@ PY
 ```
 на последнем проценте подвиснит это ок
 
+если postrges dsn, es url, export-root и embend model совпадают с env
 ```
 python build_library_db.py \
-  --dsn postgresql://libuser:libpass@localhost:5432/library \
   --create-db --recreate-schema \
   --root  <ВАШ_ПУТЬ_К_EPUB_ПАПКЕ> \
-  --es-url http://localhost:9200 \
-  --es-index-meta books_meta \
-  --es-index-content books_content \
   --recreate-es \
   --es-use-templates \
-  --es-dense-vector-dim 1024 \
-  --join-short-paragraphs --min-paragraph-words 15 \
-  --para-window-size 2 --para-window-stride 1 \
-  --embed-model ./models/bge-m3 \
-  --embed-device auto \
-  --embed-batch-size 64 \
-  --embed-max-words 256 --embed-overlap-words 32 \
-  --embed-normalize \
   --limit 5 #на cpu даже 5 первых книг будут векторизоваться долго
 ```
 ## 6) Как открыть базу в DBeaver
