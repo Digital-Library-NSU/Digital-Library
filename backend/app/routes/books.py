@@ -23,7 +23,7 @@ def _get_cover_path(book_id: int) -> str | None:
     for ext in (".jpg", ".jpeg", ".png", ".webp"):
         candidate = base_dir / f"cover{ext}"
         if candidate.exists():
-            return str(candidate)
+            return f"/books_content/{book_id}/cover{ext}"
 
     return None
 
