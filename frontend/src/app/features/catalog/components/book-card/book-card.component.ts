@@ -14,7 +14,6 @@ export class BookCardComponent {
     @Output() details = new EventEmitter<number>();
     protected readonly apiUrl = environment.apiUrl;
 
-    protected readonly apiUrl = environment.apiUrl;
 
     onDetailsClick(event: Event) {
         event.stopPropagation();
