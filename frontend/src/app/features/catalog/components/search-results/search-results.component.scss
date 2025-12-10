@@ -1,0 +1,52 @@
+.books-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 2rem;
+}
+
+.results-header {
+    margin-bottom: 1rem;
+}
+
+.search-hit-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.snippet-box {
+    background: #fff;
+    border-left: 3px solid #f1c40f;
+    padding: 10px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+
+    .snippet-header {
+        font-weight: bold;
+        font-size: 0.75rem;
+        color: #95a5a6;
+        margin-bottom: 4px;
+    }
+
+    .snippet-text {
+        margin: 0;
+        color: #555;
+        line-height: 1.4;
+
+        ::ng-deep em {
+            background-color: #fffacd;
+            font-style: normal;
+            font-weight: bold;
+            color: #d35400;
+            padding: 0 2px;
+            border-radius: 2px;
+        }
+    }
+}
+
+p,
+em,
+div {
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+}

@@ -12,6 +12,7 @@ import { environment } from '../../../../../environments/environment';
 export class BookCardComponent {
     @Input({ required: true }) book!: BookCard;
     @Output() details = new EventEmitter<number>();
+    protected readonly apiUrl = environment.apiUrl;
 
     protected readonly apiUrl = environment.apiUrl;
 

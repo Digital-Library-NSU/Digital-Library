@@ -17,3 +17,24 @@ export interface Book {
     cover_path: string | null;
     authors: string;
 }
+
+export interface Snippet {
+    doc_id: string;
+    edition_id: string;
+    chapter_ord: number;
+    chapter_path: string;
+    chapter_title: string | null;
+    snippet: string;
+}
+
+export interface SearchHit {
+    book: BookCard;
+    score: number;
+    match_type?: 'meta' | 'quote';
+    snippet: Snippet | null;
+}
+
+export interface SearchResponse {
+    total: number;
+    hits: SearchHit[];
+}

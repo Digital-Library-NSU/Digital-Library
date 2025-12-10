@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 import { ApiService } from './api.service';
-import { Book, BookCard } from '../../shared/models/book.model';
+import { Book, BookCard, SearchResponse } from '../../shared/models/book.model';
 import { environment } from '../../../environments/environment';
 import { HttpClient } from '@angular/common/http';
 
@@ -29,5 +29,29 @@ export class BookDataService {
         formData.append('file', file);
 
         return this.http.post(`${this.baseUrl}/books/upload`, formData);
+    }
+
+    searchFullText(
+        q: string,
+        size: number = 12,
+        offset: number = 0
+    ): Observable<SearchResponse> {
+        return this.api.get<SearchResponse>('/search/fulltext', {
+            q,
+            size,
+            offset,
+        });
+    }
+
+    searchSemantic(
+        q: string,
+        size: number = 12,
+        offset: number = 0
+    ): Observable<SearchResponse> {
+        return this.api.get<SearchResponse>('/search/semantic', {
+            q,
+            size,
+            offset,
+        });
     }
 }

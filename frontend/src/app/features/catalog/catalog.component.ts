@@ -1,11 +1,13 @@
 import { CommonModule } from '@angular/common';
 import { Component, inject } from '@angular/core';
 import { BookCardComponent } from './components/book-card/book-card.component';
-import { Book, BookCard } from '../../shared/models/book.model';
+import { Book, BookCard, SearchHit } from '../../shared/models/book.model';
 import { BookDataService } from '../../core/services/book-data.service';
 import { finalize } from 'rxjs/operators';
 import { BookDetailsModalComponent } from './components/book-details-modal/book-details-modal.component';
 import { UploadBookModalComponent } from './components/upload-book-modal/upload-book-modal.component';
+import { SearchWidgetComponent } from './components/search-widget/search-widget.component';
+import { SearchResultsComponent } from './components/search-results/search-results.component';
 
 @Component({
     selector: 'app-catalog',
@@ -14,6 +16,8 @@ import { UploadBookModalComponent } from './components/upload-book-modal/upload-
         BookCardComponent,
         BookDetailsModalComponent,
         UploadBookModalComponent,
+        SearchWidgetComponent,
+        SearchResultsComponent,
     ],
     templateUrl: './catalog.component.html',
     styleUrl: './catalog.component.scss',
@@ -27,6 +31,9 @@ export class CatalogComponent {
     selectedBook: Book | null = null;
     isDetailsLoading = false;
     showUploadModal = false;
+    viewMode: 'default' | 'search' = 'default';
+    searchResults: SearchHit[] = [];
+    searchTotal = 0;
 
     limit = 12;
     offset = 0;
@@ -51,6 +58,17 @@ export class CatalogComponent {
                     this.error = 'Failed to load books';
                 },
             });
+    }
+
+    onSearchResults(data: { hits: SearchHit[]; total: number }) {
+        this.searchResults = data.hits;
+        this.searchTotal = data.total;
+        this.viewMode = 'search';
+    }
+
+    onSearchCleared() {
+        this.viewMode = 'default';
+        this.searchResults = [];
     }
 
     openBookDetails(bookId: number) {
