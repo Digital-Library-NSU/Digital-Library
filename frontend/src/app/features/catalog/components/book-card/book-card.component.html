@@ -1,7 +1,7 @@
 <div class="card">
     <div class="cover-wrapper">
         @if (book.cover_path) {
-        <img [src]="book.cover_path" [alt]="book.title" loading="lazy">
+        <img [src]="apiUrl + book.cover_path" [alt]="book.title" loading="lazy">
         } @else {
         <div class="placeholder-cover">
             <span>No Cover</span>

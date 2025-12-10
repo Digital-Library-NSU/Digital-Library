@@ -1,0 +1,21 @@
+<div class="results-header">
+    Найдено {{ total }} совпадений
+</div>
+
+<div class="books-grid">
+    @for (hit of hits; track hit.book.book_id) {
+    <div class="search-hit-card">
+        <app-book-card [book]="hit.book" (details)="onDetails($event)">
+        </app-book-card>
+
+        @if (hit.match_type === 'quote' && hit.snippet) {
+        <div class="snippet-box">
+            <div class="snippet-header">
+                {{ hit.snippet.chapter_title || 'Chapter ' + hit.snippet.chapter_ord }}
+            </div>
+            <p class="snippet-text" [innerHTML]="hit.snippet.snippet"></p>
+        </div>
+        }
+    </div>
+    }
+</div>

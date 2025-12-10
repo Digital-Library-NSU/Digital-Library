@@ -1,0 +1,23 @@
+<div class="search-section">
+    <div class="search-tabs">
+        <button class="tab-btn" [class.active]="searchMode === 'fulltext'" (click)="setSearchMode('fulltext')">
+            Поиск
+        </button>
+        <button class="tab-btn" [class.active]="searchMode === 'semantic'" (click)="setSearchMode('semantic')">
+            Поиск по цитате
+        </button>
+    </div>
+
+    <div class="search-input-wrapper">
+        <input type="text" [(ngModel)]="searchQuery" (keydown.enter)="performSearch()" [placeholder]="getPlaceholder()"
+            [disabled]="isSearching">
+
+        @if (searchQuery) {
+        <button class="clear-icon" (click)="clear()">&times;</button>
+        }
+
+        <button class="search-icon-btn" (click)="performSearch()" [disabled]="isSearching">
+            @if (isSearching) { ⏳ } @else { 🔍 }
+        </button>
+    </div>
+</div>

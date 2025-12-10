@@ -3,21 +3,33 @@
     <header class="catalog-header">
         <h1>Каталог</h1>
         <button class="add-book-btn" (click)="openUploadModal()">
-            + Upload Book
+            + Загрузить книгу
         </button>
+        <app-search-widget (searchResults)="onSearchResults($event)" (searchCleared)="onSearchCleared()">
+        </app-search-widget>
     </header>
 
+    @if (viewMode === 'search') {
+    <app-search-results [hits]="searchResults" [total]="searchTotal" (detailsClick)="openBookDetails($event)">
+    </app-search-results>
+
+    @if (searchTotal === 0) {
+    <div class="empty-state">Совпадений не найдено.</div>
+    }
+    }
+
+    @if (viewMode === 'default') {
     @if (error) {
     <div class="error-message">
         <p>{{ error }}</p>
-        <button (click)="loadBooks()">Retry</button>
+        <button (click)="loadBooks()">Заново</button>
     </div>
     }
 
     @if (isLoading) {
     <div class="loader-container">
         <div class="spinner"></div>
-        <p>Loading books...</p>
+        <p>Загружаем книги...</p>
     </div>
     }
 
@@ -41,9 +53,10 @@
     </app-book-details-modal>
     }
     @if (isDetailsLoading) {
-    <div class="overlay-loader">Opening book...</div>
+    <div class="overlay-loader">Открываем книгу...</div>
     }
     @if (showUploadModal) {
     <app-upload-book-modal (close)="closeUploadModal($event)"></app-upload-book-modal>
+    }
     }
 </div>
