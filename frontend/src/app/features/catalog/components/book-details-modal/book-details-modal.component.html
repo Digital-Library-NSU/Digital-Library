@@ -7,7 +7,7 @@
         <div class="modal-body">
             <div class="cover-column">
                 @if (book.cover_path) {
-                <img [src]="book.cover_path" [alt]="book.title">
+                <img [src]="apiUrl + book.cover_path" [alt]="book.title">
                 } @else {
                 <div class="placeholder-cover">No Cover</div>
                 }
