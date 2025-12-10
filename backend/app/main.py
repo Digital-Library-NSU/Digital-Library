@@ -7,9 +7,16 @@ from app.integrations.elasticsearch import es_get
 from app.integrations.embed_model import _HAS_ST, get_encoder
 from app.routes import *
 
-
+from fastapi.staticfiles import StaticFiles
+from app.config import BOOKS_CONTENT_DIR
 
 app = FastAPI()
+
+app.mount(
+    "/books_content",
+    StaticFiles(directory=BOOKS_CONTENT_DIR),
+    name="books_content",
+)
 
 app.add_middleware(
     CORSMiddleware,
