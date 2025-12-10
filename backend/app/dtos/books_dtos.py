@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import datetime
 from pydantic import BaseModel
 
 
@@ -15,7 +15,7 @@ class BookDto(BaseModel):
     lang: str | None
     description: str | None
     publisher: str | None
-    pub_date: date | None
+    pub_date: datetime | None
     subjects: str | None
     series: str | None
     cover_path: str | None
