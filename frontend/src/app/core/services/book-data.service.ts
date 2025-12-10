@@ -42,4 +42,16 @@ export class BookDataService {
             offset,
         });
     }
+
+    searchSemantic(
+        q: string,
+        size: number = 12,
+        offset: number = 0
+    ): Observable<SearchResponse> {
+        return this.api.get<SearchResponse>('/search/semantic', {
+            q,
+            size,
+            offset,
+        });
+    }
 }

@@ -30,7 +30,7 @@ export interface Snippet {
 export interface SearchHit {
     book: BookCard;
     score: number;
-    match_type: 'meta' | 'quote';
+    match_type?: 'meta' | 'quote';
     snippet: Snippet | null;
 }
 

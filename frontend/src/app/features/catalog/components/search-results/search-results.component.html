@@ -8,7 +8,7 @@
         <app-book-card [book]="hit.book" (details)="onDetails($event)">
         </app-book-card>
 
-        @if (hit.match_type === 'quote' && hit.snippet) {
+        @if (hit.snippet) {
         <div class="snippet-box">
             <div class="snippet-header">
                 {{ hit.snippet.chapter_title || 'Chapter ' + hit.snippet.chapter_ord }}
