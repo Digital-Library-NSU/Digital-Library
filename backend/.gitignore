@@ -18,3 +18,4 @@ integrations/models/**
 *.safetensors
 *.pt
 tokenizer.json
+

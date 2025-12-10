@@ -1,0 +1,43 @@
+<div class="modal-overlay" (click)="closeModal()">
+    <div class="modal-content" (click)="$event.stopPropagation()">
+
+        <button class="close-btn" (click)="closeModal()">&times;</button>
+
+        @if (book) {
+        <div class="modal-body">
+            <div class="cover-column">
+                @if (book.cover_path) {
+                <img [src]="apiUrl + book.cover_path" [alt]="book.title">
+                } @else {
+                <div class="placeholder-cover">No Cover</div>
+                }
+            </div>
+
+            <div class="info-column">
+                <h2>{{ book.title }}</h2>
+                <p class="author">Автор: {{ book.authors }}</p>
+
+                <div class="meta-grid">
+                    @if (book.series) { <div><strong>Серия:</strong> {{ book.series }}</div> }
+                    @if (book.publisher) { <div><strong>Издательство:</strong> {{ book.publisher }}</div> }
+                    @if (book.pub_date) { <div><strong>Дата:</strong> {{ book.pub_date }}</div> }
+                    @if (book.lang) { <div><strong>Язык:</strong> {{ book.lang }}</div> }
+                </div>
+
+                @if (book.subjects) {
+                <div class="subjects">
+                    <span class="badge">{{ book.subjects }}</span>
+                </div>
+                }
+
+                @if (book.description) {
+                <div class="description">
+                    <h3>Описание</h3>
+                    <p [innerHTML]="book.description"></p>
+                </div>
+                }
+            </div>
+        </div>
+        }
+    </div>
+</div>

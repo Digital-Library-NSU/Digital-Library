@@ -1,0 +1,40 @@
+@use "normalize";
+@use "./assets/styles/colors";
+@use "./assets/styles/typography";
+
+@font-face {
+    font-family: "ALSSirius-Regular";
+    src: url("./assets/fonts/alssirius-regular.eot"); /* IE 9 Compatibility Mode */
+    src: url("./assets/fonts/alssirius-regular.eot?#iefix")
+            format("embedded-opentype"),
+        /* IE < 9 */ url("./assets/fonts/alssirius-regular.woff2")
+            format("woff2"),
+        /* Super Modern Browsers */ url("./assets/fonts/alssirius-regular.woff")
+            format("woff"),
+        /* Firefox >= 3.6, any other modern browser */
+            url("./assets/fonts/alssirius-regular.ttf") format("truetype"),
+        /* Safari, Android, iOS */
+            url("./assets/fonts/alssirius-regular.svg#alssirius-regular")
+            format("svg"); /* Chrome < 4, Legacy iOS */
+}
+@font-face {
+    font-family: "EirikRaude";
+    src: url("./assets/fonts/eirikraude.eot"); /* IE 9 Compatibility Mode */
+    src: url("./assets/fonts/eirikraude.eot?#iefix") format("embedded-opentype"),
+        /* IE < 9 */ url("./assets/fonts/eirikraude.woff2") format("woff2"),
+        /* Super Modern Browsers */ url("./assets/fonts/eirikraude.woff")
+            format("woff"),
+        /* Firefox >= 3.6, any other modern browser */
+            url("./assets/fonts/eirikraude.ttf") format("truetype"),
+        /* Safari, Android, iOS */
+            url("./assets/fonts/eirikraude.svg#eirikraude") format("svg"); /* Chrome < 4, Legacy iOS */
+}
+
+body {
+    background-color: var(--main-bg-color);
+}
+
+span,
+p {
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+}

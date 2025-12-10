@@ -1,0 +1,85 @@
+.card {
+    flex-direction: column;
+    display: flex;
+    height: 420px;
+    background: rgba(255, 255, 255, 0.6);
+    backdrop-filter: blur(10px);
+    border-radius: 16px;
+    padding: 12px;
+    transition: transform 0.2s, box-shadow 0.2s;
+    cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+
+    &:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+        background: rgba(255, 255, 255, 0.8);
+    }
+}
+
+.cover-wrapper {
+    width: 100%;
+    aspect-ratio: 2/3;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 12px;
+    background-color: #e0e0e0;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.placeholder-cover {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #757575;
+    font-size: 0.8rem;
+}
+
+.info {
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+}
+
+.title {
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+    margin: 0 0 4px 0;
+    font-size: 1rem;
+    font-weight: 400;
+    color: #333;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.author {
+    margin: 0;
+    font-size: 0.85rem;
+    color: #666;
+}
+
+.details-btn {
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+    margin-top: auto;
+    width: 100%;
+    padding: 8px;
+    background: transparent;
+    border: 1px solid var(--primary-text-color);
+    color: var(--primary-text-color);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+
+    &:hover {
+        background: var(--primary-text-color);
+        color: white;
+    }
+}

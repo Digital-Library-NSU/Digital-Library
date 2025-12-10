@@ -1,0 +1,38 @@
+<div class="modal-overlay" (click)="closeModal()">
+    <div class="modal-content" (click)="$event.stopPropagation()">
+        <button class="close-btn" (click)="closeModal()">&times;</button>
+
+        <h2>Загрузка новой книги</h2>
+
+        @if (!isSuccess) {
+        <div class="upload-form">
+            <p class="hint">Выберите .epub файл для загрузки</p>
+
+            <input type="file" accept=".epub" (change)="onFileSelected($event)" [disabled]="isUploading" #fileInput>
+
+            @if (errorMessage) {
+            <div class="error-alert">
+                {{ errorMessage }}
+            </div>
+            }
+
+            <button class="upload-btn" [disabled]="!selectedFile || isUploading" (click)="upload()">
+                @if (isUploading) {
+                Загрузка...
+                } @else {
+                Загрузить книгу
+                }
+            </button>
+        </div>
+        }
+
+        @if (isSuccess) {
+        <div class="success-state">
+            <div class="check-icon">✓</div>
+            <h3>Success!</h3>
+            <p>Книга успешно загружена.</p>
+            <button class="upload-btn success" (click)="closeModal()">Закрыть</button>
+        </div>
+        }
+    </div>
+</div>
