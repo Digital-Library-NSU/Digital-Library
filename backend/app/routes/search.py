@@ -1,10 +1,13 @@
 from pathlib import Path
+import re
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, Query, HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload, joinedload
 
 from app.config import IDX_CONTENT, IDX_META, BOOKS_CONTENT_DIR
-from app.integrations.database import get_pg
+from app.integrations.database import get_db_session
 from app.integrations.elasticsearch import es_post
 from app.integrations.embed_model import _HAS_ST, encode_query
 from app.dtos.books_dtos import BookCardDto
@@ -15,22 +18,26 @@ from app.dtos.search_dtos import (
     SemanticHitDTO,
     SemanticResponseDTO,
 )
+from app.integrations.orm import Book, BookAuthor, ContentParagraph
 
 router = APIRouter(prefix="/search")
-
 
 BOOKS_ROOT = Path(BOOKS_CONTENT_DIR).expanduser() if BOOKS_CONTENT_DIR else None
 
 
-def cover_path_for_book(book_id: int) -> Optional[str]:
+def _get_cover_path(book_id: int) -> str | None:
     if not BOOKS_ROOT:
         return None
 
     base_dir = BOOKS_ROOT / str(book_id)
+    if not base_dir.exists():
+        return None
+
     for ext in (".jpg", ".jpeg", ".png", ".webp"):
         candidate = base_dir / f"cover{ext}"
         if candidate.exists():
-            return str(candidate)
+            return f"/books_content/{book_id}/cover{ext}"
+
     return None
 
 
@@ -56,38 +63,30 @@ def fetch_paragraph_extras(doc_ids: List[str]) -> Dict[str, ParagraphExtra]:
     base_ids: List[str] = []
     for d in doc_ids:
         parts = d.split(":")
-        if len(parts) >= 4:
-            base = ":".join(parts[:3])
-        else:
-            base = d
+        base = ":".join(parts[:3]) if len(parts) >= 4 else d
         base_map[d] = base
         if base not in base_ids:
             base_ids.append(base)
 
-    conn = get_pg()
-    q = """
-      SELECT
-        cp.es_doc_id,
-        cp.book_id,
-        cp.chapter_id,
-        ec.ord,
-        ec.title
-      FROM content_paragraphs cp
-      LEFT JOIN edition_chapters ec
-        ON ec.id = cp.chapter_id
-      WHERE cp.es_doc_id = ANY(%s)
-    """
-    with conn.cursor() as cur:
-        cur.execute(q, (base_ids,))
-        rows = cur.fetchall()
+    with get_db_session() as db:
+        stmt = (
+            select(ContentParagraph)
+            .where(ContentParagraph.es_doc_id.in_(base_ids))
+            .options(joinedload(ContentParagraph.chapter))
+        )
+        rows = db.execute(stmt).scalars().all()
 
     by_base: Dict[str, ParagraphExtra] = {}
-    for es_doc_id, book_id, chapter_id, ord_, title in rows:
-        by_base[es_doc_id] = ParagraphExtra(
-            book_id=int(book_id) if book_id is not None else None,
-            chapter_id=int(chapter_id) if chapter_id is not None else None,
-            chapter_ord=int(ord_) if ord_ is not None else None,
-            chapter_title=title,
+    for cp in rows:
+        if not cp.es_doc_id:
+            continue
+
+        ch = cp.chapter
+        by_base[cp.es_doc_id] = ParagraphExtra(
+            book_id=int(cp.book_id) if cp.book_id is not None else None,
+            chapter_id=int(cp.chapter_id) if cp.chapter_id is not None else None,
+            chapter_ord=int(ch.ord) if (ch is not None and ch.ord is not None) else None,
+            chapter_title=ch.title if ch is not None else None,
         )
 
     result: Dict[str, ParagraphExtra] = {}
@@ -95,6 +94,7 @@ def fetch_paragraph_extras(doc_ids: List[str]) -> Dict[str, ParagraphExtra]:
         extra = by_base.get(base)
         if extra:
             result[orig] = extra
+
     return result
 
 
@@ -102,36 +102,33 @@ def fetch_books_by_ids(ids: List[int]) -> Dict[int, BookCardDto]:
     if not ids:
         return {}
 
-    conn = get_pg()
-    q = """
-      WITH sel AS (
-        SELECT UNNEST(%s::bigint[]) AS id
-      )
-      SELECT
-        b.id,
-        b.title,
-        COALESCE(string_agg(a.name, ', ' ORDER BY ba.ord), '') AS authors
-      FROM sel
-      JOIN books b ON b.id = sel.id
-      LEFT JOIN book_authors ba ON ba.book_id = b.id
-      LEFT JOIN authors a ON a.id = ba.author_id
-      GROUP BY b.id, b.title
-    """
-
-    with conn.cursor() as cur:
-        cur.execute(q, (ids,))
-        rows = cur.fetchall()
+    with get_db_session() as db:
+        stmt = (
+            select(Book)
+            .where(Book.id.in_(ids))
+            .options(
+                selectinload(Book.book_authors).selectinload(BookAuthor.author)
+            )
+        )
+        books = db.execute(stmt).scalars().all()
 
     by_id: Dict[int, BookCardDto] = {}
-    for book_id, title, authors in rows:
-        bid = int(book_id)
-        cover_path = cover_path_for_book(bid)
+    for b in books:
+        bas = sorted(b.book_authors, key=lambda ba: (ba.ord is None, ba.ord or 0))
+        authors = ", ".join(
+            ba.author.name
+            for ba in bas
+            if ba.author is not None and ba.author.name
+        )
+
+        bid = int(b.id)
         by_id[bid] = BookCardDto(
             book_id=bid,
-            title=title,
-            cover_path=cover_path,
+            title=b.title,
+            cover_path=_get_cover_path(bid),
             authors=authors or "",
         )
+
     return by_id
 
 
@@ -148,24 +145,105 @@ def _build_fallback_snippet(content: Optional[str], query: str, max_len: int = 2
         snippet = text[:max_len]
         return snippet + ("…" if len(text) > max_len else "")
 
-    low_text = text.lower()
-    low_q = q_norm.lower()
+    # ---- helpers ----
+    def _tokens(s: str) -> list[str]:
+        toks = re.findall(r"[^\W_]+", s.lower(), flags=re.UNICODE)
+        if len(s) >= 5:
+            toks = [t for t in toks if len(t) >= 3]
+        out: list[str] = []
+        seen: set[str] = set()
+        for t in toks:
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+            if len(out) >= 20:
+                break
+        return out
 
-    idx = low_text.find(low_q)
-    if idx == -1:
+    def _levenshtein_bounded(a: str, b: str, max_dist: int) -> int:
+        if a == b:
+            return 0
+        la, lb = len(a), len(b)
+        if abs(la - lb) > max_dist:
+            return max_dist + 1
+        if la == 0 or lb == 0:
+            return max(la, lb)
+
+        prev = list(range(lb + 1))
+        for i in range(1, la + 1):
+            cur = [i] + [0] * lb
+            row_min = cur[0]
+            ai = a[i - 1]
+            for j in range(1, lb + 1):
+                cost = 0 if ai == b[j - 1] else 1
+                cur[j] = min(
+                    prev[j] + 1,
+                    cur[j - 1] + 1,
+                    prev[j - 1] + cost
+                )
+                if cur[j] < row_min:
+                    row_min = cur[j]
+            if row_min > max_dist:
+                return max_dist + 1
+            prev = cur
+        return prev[lb]
+
+    def _max_ed(tok: str) -> int:
+        n = len(tok)
+        if n < 5:
+            return 0
+        if n < 8:
+            return 1
+        return 2
+
+    tokens = _tokens(q_norm)
+    if not tokens:
         snippet = text[:max_len]
         return snippet + ("…" if len(text) > max_len else "")
 
-    start = max(0, idx - 60)
-    end = min(len(text), idx + len(q_norm) + 60)
+    pattern = re.compile("|".join(map(re.escape, tokens)), flags=re.IGNORECASE)
+    m = pattern.search(text)
+
+    start = 0
+    end = min(len(text), max_len)
+
+    if m:
+        idx = m.start()
+        start = max(0, idx - 60)
+        end = min(len(text), idx + 60 + (m.end() - m.start()))
+    else:
+        word_iter = list(re.finditer(r"[^\W_]+", text, flags=re.UNICODE))
+        found_pos = None
+        found_word = None
+
+        q_long = [t for t in tokens if len(t) >= 5]
+        for w in word_iter[:2000]:
+            wtxt = w.group(0)
+            wlow = wtxt.lower()
+            for t in q_long:
+                md = _max_ed(t)
+                if md == 0:
+                    continue
+                if _levenshtein_bounded(wlow, t, md) <= md:
+                    found_pos = w.start()
+                    found_word = wtxt
+                    break
+            if found_pos is not None:
+                break
+
+        if found_pos is not None:
+            start = max(0, found_pos - 60)
+            end = min(len(text), found_pos + 60 + len(found_word or ""))
+        else:
+            start = 0
+            end = min(len(text), max_len)
+
     snippet = text[start:end]
 
-    rel_idx = snippet.lower().find(low_q)
-    if rel_idx != -1:
-        before = snippet[:rel_idx]
-        mid = snippet[rel_idx:rel_idx + len(q_norm)]
-        after = snippet[rel_idx + len(q_norm):]
-        snippet = f"{before}<em>{mid}</em>{after}"
+    def _em(mo: re.Match) -> str:
+        return f"<em>{mo.group(0)}</em>"
+
+    snippet = pattern.sub(_em, snippet)
 
     if start > 0:
         snippet = "…" + snippet
@@ -173,6 +251,13 @@ def _build_fallback_snippet(content: Optional[str], query: str, max_len: int = 2
         snippet = snippet + "…"
 
     return snippet
+
+
+
+def _chapter_file_exists(book_id: int, chapter_id: int) -> bool:
+    if not BOOKS_ROOT:
+        return False
+    return (BOOKS_ROOT / str(book_id) / f"{chapter_id}.xml").exists()
 
 
 # ---------------- FULLTEXT ----------------
@@ -208,7 +293,7 @@ def fulltext_search(
                         "description.en",
                     ],
                     "operator": "and",
-                    "fuzziness": "AUTO",
+                    "fuzziness": "AUTO:5,8",
                     "prefix_length": 1,
                     "fuzzy_transpositions": True,
                 }
@@ -260,11 +345,19 @@ def fulltext_search(
             "content": {
                 "query": q,
                 "operator": "and",
-                "fuzziness": "AUTO",
+                "fuzziness": "AUTO:5,8",
                 "minimum_should_match": "85%",
                 "prefix_length": 1,
                 "fuzzy_transpositions": True,
             }
+        }
+    }
+
+    hl_query = {
+        "bool": {
+            "should": [phrase_query, fuzzy_query],
+            "minimum_should_match": 1,
+            **({"filter": content_filter} if content_filter else {}),
         }
     }
 
@@ -291,7 +384,7 @@ def fulltext_search(
                 "content": {
                     "fragment_size": 220,
                     "number_of_fragments": 1,
-                    "highlight_query": phrase_query,
+                    "highlight_query": hl_query,
                 }
             },
         },
@@ -371,8 +464,8 @@ def fulltext_search(
             else int(src.get("chapter_ord") or 0)
         )
 
-        if BOOKS_ROOT and extra and extra.chapter_id is not None:
-            chapter_path = str(BOOKS_ROOT / str(book.book_id) / f"{extra.chapter_id}.xml")
+        if extra and extra.chapter_id is not None and _chapter_file_exists(book.book_id, extra.chapter_id):
+            chapter_path = f"/books_content/{book.book_id}/{extra.chapter_id}.xml"
         else:
             chapter_path = ""
 
@@ -469,7 +562,6 @@ def semantic_search(
     res = es_post(f"{IDX_CONTENT}/_search", body)
     hits_raw = res.get("hits", {}).get("hits", [])
 
-    # extras по doc_id
     doc_ids = [h.get("_id") for h in hits_raw if h.get("_id")]
     para_extras = fetch_paragraph_extras(doc_ids)
 
@@ -514,8 +606,8 @@ def semantic_search(
             else int(src.get("chapter_ord") or 0)
         )
 
-        if BOOKS_ROOT and extra and extra.chapter_id is not None:
-            chapter_path = str(BOOKS_ROOT / str(book.book_id) / f"{extra.chapter_id}.xml")
+        if extra and extra.chapter_id is not None and _chapter_file_exists(book.book_id, extra.chapter_id):
+            chapter_path = f"/books_content/{book.book_id}/{extra.chapter_id}.xml"
         else:
             chapter_path = ""
 
