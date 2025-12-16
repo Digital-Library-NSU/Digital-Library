@@ -344,22 +344,22 @@ def fulltext_search(
         "match": {
             "content": {
                 "query": q,
-                "operator": "and",
+                "operator": "or", #and
                 "fuzziness": "AUTO:5,8",
-                "minimum_should_match": "85%",
+                "minimum_should_match": "3<75%", #85%
                 "prefix_length": 1,
                 "fuzzy_transpositions": True,
             }
         }
     }
 
-    hl_query = {
-        "bool": {
-            "should": [phrase_query, fuzzy_query],
-            "minimum_should_match": 1,
-            **({"filter": content_filter} if content_filter else {}),
-        }
-    }
+    # hl_query = {
+    #     "bool": {
+    #         "should": [phrase_query, fuzzy_query],
+    #         "minimum_should_match": 1,
+    #         **({"filter": content_filter} if content_filter else {}),
+    #     }
+    # }
 
     content_body = {
         "from": offset,
@@ -384,7 +384,7 @@ def fulltext_search(
                 "content": {
                     "fragment_size": 220,
                     "number_of_fragments": 1,
-                    "highlight_query": hl_query,
+                    "highlight_query": phrase_query, #hl_query
                 }
             },
         },
