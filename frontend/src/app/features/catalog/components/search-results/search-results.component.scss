@@ -1,3 +1,19 @@
+.section-title {
+    font-size: 1.2rem;
+    font-weight: 500;
+    color: #2c3e50;
+    margin-bottom: 1.5rem;
+    border-left: 4px solid #3498db;
+    padding-left: 10px;
+}
+
+.section-divider {
+    border: 0;
+    height: 1px;
+    background: #e0e0e0;
+    margin: 1rem 0;
+}
+
 .books-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -12,6 +28,7 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+    height: 100%;
 }
 
 .snippet-box {
@@ -21,6 +38,7 @@
     border-radius: 4px;
     font-size: 0.85rem;
     box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+    flex-grow: 1;
 
     .snippet-header {
         font-weight: bold;
@@ -45,6 +63,7 @@
     }
 }
 
+h3,
 p,
 em,
 div {
