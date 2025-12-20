@@ -22,10 +22,15 @@ def get_chapters(book_id: int) -> GetChaptersResponse:
             raise HTTPException(404, "Not found!")
 
         stmt = select(EditionChapter.id, EditionChapter.title).where(
-            EditionChapter.edition_id == edition_id)
+            EditionChapter.edition_id == edition_id).order_by(EditionChapter.ord)
+
+        result = db_session.execute(stmt).all()
 
         chapters = [ChapterDto(chapter_id=chapter_id, title=title)
-                    for chapter_id, title in db_session.execute(stmt).all()]
+                    for chapter_id, title in result]
+
+        if chapters[0].title.lower() == "cover":
+            chapters = chapters[1:]
 
         return GetChaptersResponse(chapters=chapters)
 
