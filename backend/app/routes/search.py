@@ -132,128 +132,6 @@ def fetch_books_by_ids(ids: List[int]) -> Dict[int, BookCardDto]:
     return by_id
 
 
-def _build_fallback_snippet(content: Optional[str], query: str, max_len: int = 220) -> str:
-    if not content:
-        return ""
-
-    text = content.strip()
-    if not text:
-        return ""
-
-    q_norm = query.strip()
-    if not q_norm:
-        snippet = text[:max_len]
-        return snippet + ("…" if len(text) > max_len else "")
-
-    # ---- helpers ----
-    def _tokens(s: str) -> list[str]:
-        toks = re.findall(r"[^\W_]+", s.lower(), flags=re.UNICODE)
-        if len(s) >= 5:
-            toks = [t for t in toks if len(t) >= 3]
-        out: list[str] = []
-        seen: set[str] = set()
-        for t in toks:
-            if t not in seen:
-                seen.add(t)
-                out.append(t)
-            if len(out) >= 20:
-                break
-        return out
-
-    def _levenshtein_bounded(a: str, b: str, max_dist: int) -> int:
-        if a == b:
-            return 0
-        la, lb = len(a), len(b)
-        if abs(la - lb) > max_dist:
-            return max_dist + 1
-        if la == 0 or lb == 0:
-            return max(la, lb)
-
-        prev = list(range(lb + 1))
-        for i in range(1, la + 1):
-            cur = [i] + [0] * lb
-            row_min = cur[0]
-            ai = a[i - 1]
-            for j in range(1, lb + 1):
-                cost = 0 if ai == b[j - 1] else 1
-                cur[j] = min(
-                    prev[j] + 1,
-                    cur[j - 1] + 1,
-                    prev[j - 1] + cost
-                )
-                if cur[j] < row_min:
-                    row_min = cur[j]
-            if row_min > max_dist:
-                return max_dist + 1
-            prev = cur
-        return prev[lb]
-
-    def _max_ed(tok: str) -> int:
-        n = len(tok)
-        if n < 5:
-            return 0
-        if n < 8:
-            return 1
-        return 2
-
-    tokens = _tokens(q_norm)
-    if not tokens:
-        snippet = text[:max_len]
-        return snippet + ("…" if len(text) > max_len else "")
-
-    pattern = re.compile("|".join(map(re.escape, tokens)), flags=re.IGNORECASE)
-    m = pattern.search(text)
-
-    start = 0
-    end = min(len(text), max_len)
-
-    if m:
-        idx = m.start()
-        start = max(0, idx - 60)
-        end = min(len(text), idx + 60 + (m.end() - m.start()))
-    else:
-        word_iter = list(re.finditer(r"[^\W_]+", text, flags=re.UNICODE))
-        found_pos = None
-        found_word = None
-
-        q_long = [t for t in tokens if len(t) >= 5]
-        for w in word_iter[:2000]:
-            wtxt = w.group(0)
-            wlow = wtxt.lower()
-            for t in q_long:
-                md = _max_ed(t)
-                if md == 0:
-                    continue
-                if _levenshtein_bounded(wlow, t, md) <= md:
-                    found_pos = w.start()
-                    found_word = wtxt
-                    break
-            if found_pos is not None:
-                break
-
-        if found_pos is not None:
-            start = max(0, found_pos - 60)
-            end = min(len(text), found_pos + 60 + len(found_word or ""))
-        else:
-            start = 0
-            end = min(len(text), max_len)
-
-    snippet = text[start:end]
-
-    def _em(mo: re.Match) -> str:
-        return f"<em>{mo.group(0)}</em>"
-
-    snippet = pattern.sub(_em, snippet)
-
-    if start > 0:
-        snippet = "…" + snippet
-    if end < len(text):
-        snippet = snippet + "…"
-
-    return snippet
-
-
-
 def _chapter_file_exists(book_id: int, chapter_id: int) -> bool:
     if not BOOKS_ROOT:
         return False
@@ -340,58 +218,101 @@ def fulltext_search(
             }
         }
     }
+
     fuzzy_query = {
         "match": {
             "content": {
                 "query": q,
-                "operator": "or", #and
+                "operator": "or",
                 "fuzziness": "AUTO:5,8",
-                "minimum_should_match": "3<75%", #85%
+                "minimum_should_match": "3<75%",
                 "prefix_length": 1,
                 "fuzzy_transpositions": True,
             }
         }
     }
 
-    # hl_query = {
-    #     "bool": {
-    #         "should": [phrase_query, fuzzy_query],
-    #         "minimum_should_match": 1,
-    #         **({"filter": content_filter} if content_filter else {}),
-    #     }
-    # }
+    base_source = [
+        "book_id",
+        "edition_id",
+        "chapter_ord",
+        "chapter_href",
+        "content",
+    ]
 
-    content_body = {
+    books_aggs = {
+        "books": {
+            "cardinality": {"field": "book_id", "precision_threshold": 40000}
+        }
+    }
+
+    content_body_phrase = {
         "from": offset,
         "size": size,
         "query": {
             "bool": {
-                "should": [phrase_query, fuzzy_query],
-                "minimum_should_match": 1,
+                "must": [phrase_query],
                 **({"filter": content_filter} if content_filter else {}),
             }
         },
-        "_source": [
-            "book_id",
-            "edition_id",
-            "chapter_ord",
-            "chapter_href",
-            "content",
-        ],
+        "collapse": {"field": "book_id"},
+        "aggs": books_aggs,
+        "_source": base_source,
         "highlight": {
             "type": "fvh",
             "fields": {
                 "content": {
                     "fragment_size": 220,
                     "number_of_fragments": 1,
-                    "highlight_query": phrase_query, #hl_query
+                    "highlight_query": phrase_query,
                 }
             },
         },
     }
 
-    content_res = es_post(f"{IDX_CONTENT}/_search", content_body)
+    content_res = es_post(f"{IDX_CONTENT}/_search", content_body_phrase)
     content_hits_raw = content_res.get("hits", {}).get("hits", [])
+
+    quote_total_books = (
+        content_res.get("aggregations", {})
+        .get("books", {})
+        .get("value", 0)
+    )
+
+
+    if quote_total_books == 0:
+        content_body_fuzzy = {
+            "from": offset,
+            "size": size,
+            "query": {
+                "bool": {
+                    "must": [fuzzy_query],
+                    **({"filter": content_filter} if content_filter else {}),
+                }
+            },
+            "collapse": {"field": "book_id"},
+            "aggs": books_aggs,
+            "_source": base_source,
+            "highlight": {
+                "type": "fvh",
+                "fields": {
+                    "content": {
+                        "fragment_size": 220,
+                        "number_of_fragments": 1,
+                        "highlight_query": fuzzy_query,
+                    }
+                },
+            },
+        }
+
+        content_res = es_post(f"{IDX_CONTENT}/_search", content_body_fuzzy)
+        content_hits_raw = content_res.get("hits", {}).get("hits", [])
+
+        quote_total_books = (
+            content_res.get("aggregations", {})
+            .get("books", {})
+            .get("value", 0)
+        )
 
     # ---------- 3. Дотягиваем карточки книг + extras по параграфам ----------
     all_book_ids: List[int] = []
@@ -450,10 +371,7 @@ def fulltext_search(
             continue
 
         hl_list = h.get("highlight", {}).get("content", [])
-        if hl_list:
-            snippet_html = hl_list[0]
-        else:
-            snippet_html = _build_fallback_snippet(src.get("content"), q)
+        snippet_html = hl_list[0] if hl_list else ""
 
         doc_id = h.get("_id")
         extra = para_extras.get(doc_id or "")
@@ -492,11 +410,9 @@ def fulltext_search(
     quote_hits_sorted = sorted(quote_hits, key=lambda x: x.score, reverse=True)
 
     all_hits = meta_hits_sorted + quote_hits_sorted
-    total = len(all_hits)
-
+    total_books = len(all_hits)
     all_hits = all_hits[:size]
-
-    return FullTextResponseDTO(total=total, hits=all_hits)
+    return FullTextResponseDTO(total=total_books, hits=all_hits)
 
 
 # ---------------- SEMANTIC ----------------
@@ -541,6 +457,7 @@ def semantic_search(
     body = {
         "from": offset,
         "size": size,
+        "collapse": {"field": "book_id"},
         "knn": {
             "field": "content_vec",
             "query_vector": qvec,
@@ -628,5 +545,5 @@ def semantic_search(
             )
         )
 
-    total = res.get("hits", {}).get("total", {}).get("value", len(hits))
-    return SemanticResponseDTO(total=total, hits=hits)
+    total_books = len(hits)
+    return SemanticResponseDTO(total=total_books, hits=hits)
