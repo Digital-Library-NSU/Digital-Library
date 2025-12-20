@@ -10,6 +10,7 @@ from app.config import BOOKS_CONTENT_DIR
 from pathlib import Path
 from app.integrations.database import get_pg
 from argparse import Namespace
+from app.import_epub import process_epub
 from app.config import (
     PG_DSN,
     ES_URL,
@@ -115,7 +116,7 @@ def upload_book(file: UploadFile = File(...)):
         es_index_content=IDX_CONTENT,
         recreate_es=False,
         es_no_source=False,
-        es_use_templates=False,
+        es_use_templates=True,
         es_dense_vector_dim=1024,
         es_enable_suggest=False,
 
@@ -149,10 +150,6 @@ def upload_book(file: UploadFile = File(...)):
             conn=get_pg(),
             file_path=tmp_path,
             args=args,
-            es_url=None if args.no_es else args.es_url,
-            idx_meta=args.es_index_meta,
-            idx_content=args.es_index_content,
-            export_root=export_root_path,
         )
         return {"status": status}
 
