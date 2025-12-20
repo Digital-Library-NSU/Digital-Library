@@ -159,15 +159,7 @@ def main():
 
         for p in tqdm(files, desc="Importing EPUBs"):
             try:
-                status = process_epub(
-                    conn,
-                    p,
-                    args,
-                    None if args.no_es else args.es_url,
-                    args.es_index_meta,
-                    args.es_index_content,
-                    export_root,
-                )
+                status = process_epub(conn, p, args)
                 if status == "skipped":
                     skipped_epubs.append(p.name)
             except Exception as e:
