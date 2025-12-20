@@ -37,4 +37,7 @@ def get_chapters(book_id: int) -> GetChaptersResponse:
 
 @router.get("/{book_id}/{chapter_id}")
 def get_chapter(book_id: int, chapter_id: int) -> FileResponse:
-    return FileResponse(path=Path(BOOKS_CONTENT_DIR + f"/{book_id}/{chapter_id}.xml"), media_type="application/xhtml+xml")
+    path = Path(BOOKS_CONTENT_DIR + f"/{book_id}/{chapter_id}.xml")
+    if not path.is_file():
+        raise HTTPException(404, "Not found!")
+    return FileResponse(path=path, media_type="application/xhtml+xml")
