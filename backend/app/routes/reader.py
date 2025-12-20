@@ -37,4 +37,4 @@ def get_chapters(book_id: int) -> GetChaptersResponse:
 
 @router.get("/{book_id}/{chapter_id}")
 def get_chapter(book_id: int, chapter_id: int) -> FileResponse:
-    return FileResponse(path=Path(BOOKS_CONTENT_DIR + f"/{book_id}/{chapter_id}"), media_type="application/xhtml+xml")
+    return FileResponse(path=Path(BOOKS_CONTENT_DIR + f"/{book_id}/{chapter_id}.xml"), media_type="application/xhtml+xml")
