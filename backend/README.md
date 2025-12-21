@@ -103,6 +103,7 @@ python build_library_db.py \
   --root  <ВАШ_ПУТЬ_К_EPUB_ПАПКЕ> \
   --recreate-es \
   --es-use-templates \
+  --workers <если нужен параллелизм, по дефолту 1> \
   --limit 5 #на cpu даже 5 первых книг будут векторизоваться долго
 ```
 ## 6) Как открыть базу в DBeaver

@@ -147,7 +147,6 @@ def upload_book(file: UploadFile = File(...)):
 
     try:
         status = process_epub(
-            conn=get_pg(),
             file_path=tmp_path,
             args=args,
         )
