@@ -1,5 +1,7 @@
 import argparse
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional
 
@@ -15,8 +17,16 @@ def main():
     ap = argparse.ArgumentParser(
         description="EPUB -> Postgres (meta) + Elasticsearch (paragraphs + embeddings)."
     )
-    ap.add_argument("--dsn", default="postgresql://libuser:libpass@localhost:5432/library", help="PostgreSQL DSN")
-    ap.add_argument("--root", required=True, help="Папка с файлами .epub  или одиночный .epub-файл")
+    ap.add_argument(
+        "--dsn",
+        default="postgresql://libuser:libpass@localhost:5432/library",
+        help="PostgreSQL DSN",
+    )
+    ap.add_argument(
+        "--root",
+        required=True,
+        help="Папка с файлами .epub  или одиночный .epub-файл",
+    )
     ap.add_argument("--create-db", action="store_true")
     ap.add_argument("--recreate-schema", action="store_true")
 
@@ -101,6 +111,13 @@ def main():
         help="Директория, куда складывать обложки и главы книг (по book_id).",
     )
 
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default= 1,
+        help="Количество параллельных воркеров (processes). 1 = без параллелизма.",
+    )
+
     args = ap.parse_args()
 
     if args.create_db:
@@ -113,60 +130,83 @@ def main():
         apply_schema(conn)
     except Exception:
         pass
+    finally:
+        conn.close()
 
     skipped_epubs: List[str] = []
+    failed_epubs: List[str] = []
 
     export_root: Optional[Path] = None
     if args.export_root:
         export_root = Path(args.export_root).expanduser()
         export_root.mkdir(parents=True, exist_ok=True)
 
-    try:
-        if not args.no_es:
-            if args.recreate_es:
-                for name in (args.es_index_meta, args.es_index_content):
-                    try:
-                        r = requests.delete(f"{args.es_url}/{name}", timeout=30)
-                        if r.status_code not in (200, 202, 404):
-                            print(f"[WARN] ES delete {name}: {r.status_code} {r.text[:200]}", file=sys.stderr)
-                    except Exception as e:
-                        print(f"[WARN] ES delete {name} failed: {e}", file=sys.stderr)
-            ensure_es_indices(
-                args.es_url,
-                args.es_index_meta,
-                args.es_index_content,
-                store_source=not args.es_no_source,
-                use_templates=args.es_use_templates,
-                dense_vec_dim=max(0, args.es_dense_vector_dim),
-                enable_suggest=args.es_enable_suggest,
-            )
 
-        root = Path(args.root).expanduser()
-        if root.is_file():
-            if root.suffix.lower() != ".epub":
-                print(f"[ERROR] Формат файла не EPUB: {root}", file=sys.stderr)
-                return
-            files = [root]
-        else:
-            files = sorted(p for p in root.rglob("*.epub"))
+    if not args.no_es:
+        if args.recreate_es:
+            for name in (args.es_index_meta, args.es_index_content):
+                try:
+                    r = requests.delete(f"{args.es_url}/{name}", timeout=30)
+                    if r.status_code not in (200, 202, 404):
+                        print(f"[WARN] ES delete {name}: {r.status_code} {r.text[:200]}", file=sys.stderr)
+                except Exception as e:
+                    print(f"[WARN] ES delete {name} failed: {e}", file=sys.stderr)
 
-        if args.limit > 0:
-            files = files[: args.limit]
+        ensure_es_indices(
+            args.es_url,
+            args.es_index_meta,
+            args.es_index_content,
+            store_source=not args.es_no_source,
+            use_templates=args.es_use_templates,
+            dense_vec_dim=max(0, args.es_dense_vector_dim),
+            enable_suggest=args.es_enable_suggest,
+        )
 
-        if not files:
-            print("[INFO] EPUB файлы не найдены по указанному пути.", file=sys.stderr)
+
+    root = Path(args.root).expanduser()
+    if root.is_file():
+        if root.suffix.lower() != ".epub":
+            print(f"[ERROR] Формат файла не EPUB: {root}", file=sys.stderr)
             return
+        files = [root]
+    else:
+        files = sorted(p for p in root.rglob("*.epub"))
 
+    if args.limit > 0:
+        files = files[: args.limit]
+
+    if not files:
+        print("[INFO] EPUB файлы не найдены по указанному пути.", file=sys.stderr)
+        return
+
+
+    if args.workers <= 1:
         for p in tqdm(files, desc="Importing EPUBs"):
             try:
-                status = process_epub(conn, p, args)
+                status = process_epub(p, args)
                 if status == "skipped":
                     skipped_epubs.append(p.name)
             except Exception as e:
-                conn.rollback()
+                failed_epubs.append(p.name)
                 print(f"[ERROR] {p.name}: {e}", file=sys.stderr)
-    finally:
-        conn.close()
+    else:
+        with ProcessPoolExecutor(max_workers=args.workers) as ex:
+            future_to_path = {ex.submit(process_epub, p, args): p for p in files}
+
+            for fut in tqdm(
+                as_completed(future_to_path),
+                total=len(future_to_path),
+                desc="Importing EPUBs",
+            ):
+                p = future_to_path[fut]
+                try:
+                    status = fut.result()
+                    if status == "skipped":
+                        skipped_epubs.append(p.name)
+                except Exception as e:
+                    failed_epubs.append(p.name)
+                    print(f"[ERROR] {p.name}: {e}", file=sys.stderr)
+
 
     if skipped_epubs:
         print("\n[INFO] Skipped EPUBs due to excessive missing spine resources:")
@@ -174,6 +214,11 @@ def main():
             print(f"  - {name}")
     else:
         print("\n[INFO] No EPUBs were skipped.")
+
+    if failed_epubs:
+        print("\n[INFO] Failed EPUBs due to errors:")
+        for name in failed_epubs:
+            print(f"  - {name}")
 
 
 if __name__ == "__main__":
