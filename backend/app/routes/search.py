@@ -409,10 +409,28 @@ def fulltext_search(
     meta_hits_sorted = sorted(meta_hits, key=lambda x: x.score, reverse=True)
     quote_hits_sorted = sorted(quote_hits, key=lambda x: x.score, reverse=True)
 
-    all_hits = meta_hits_sorted + quote_hits_sorted
-    total_books = len(all_hits)
-    all_hits = all_hits[:size]
-    return FullTextResponseDTO(total=total_books, hits=all_hits)
+    merged: List[FullTextHitDTO] = []
+    seen_books: set[int] = set()
+
+    for h in meta_hits_sorted:
+        bid = int(h.book.book_id)
+        if bid in seen_books:
+            continue
+        merged.append(h)
+        seen_books.add(bid)
+
+    for h in quote_hits_sorted:
+        bid = int(h.book.book_id)
+        if bid in seen_books:
+            continue
+        merged.append(h)
+        seen_books.add(bid)
+
+    merged = merged[:size]
+    total_books = len(merged)
+
+    return FullTextResponseDTO(total=total_books, hits=merged)
+
 
 
 # ---------------- SEMANTIC ----------------
