@@ -1,10 +1,9 @@
 from pathlib import Path
-import re
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, Query, HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload, joinedload
+from sqlalchemy.orm import selectinload
 
 from app.config import IDX_CONTENT, IDX_META, BOOKS_CONTENT_DIR
 from app.integrations.database import get_db_session
@@ -18,7 +17,8 @@ from app.dtos.search_dtos import (
     SemanticHitDTO,
     SemanticResponseDTO,
 )
-from app.integrations.orm import Book, BookAuthor, ContentParagraph
+from app.integrations.orm import Book, BookAuthor
+from app.utils.paragraph_extras import fetch_paragraph_extras
 
 router = APIRouter(prefix="/search")
 
@@ -39,63 +39,6 @@ def _get_cover_path(book_id: int) -> str | None:
             return f"/books_content/{book_id}/cover{ext}"
 
     return None
-
-
-class ParagraphExtra:
-    def __init__(
-        self,
-        book_id: Optional[int],
-        chapter_id: Optional[int],
-        chapter_ord: Optional[int],
-        chapter_title: Optional[str],
-    ):
-        self.book_id = book_id
-        self.chapter_id = chapter_id
-        self.chapter_ord = chapter_ord
-        self.chapter_title = chapter_title
-
-
-def fetch_paragraph_extras(doc_ids: List[str]) -> Dict[str, ParagraphExtra]:
-    if not doc_ids:
-        return {}
-
-    base_map: Dict[str, str] = {}
-    base_ids: List[str] = []
-    for d in doc_ids:
-        parts = d.split(":")
-        base = ":".join(parts[:3]) if len(parts) >= 4 else d
-        base_map[d] = base
-        if base not in base_ids:
-            base_ids.append(base)
-
-    with get_db_session() as db:
-        stmt = (
-            select(ContentParagraph)
-            .where(ContentParagraph.es_doc_id.in_(base_ids))
-            .options(joinedload(ContentParagraph.chapter))
-        )
-        rows = db.execute(stmt).scalars().all()
-
-    by_base: Dict[str, ParagraphExtra] = {}
-    for cp in rows:
-        if not cp.es_doc_id:
-            continue
-
-        ch = cp.chapter
-        by_base[cp.es_doc_id] = ParagraphExtra(
-            book_id=int(cp.book_id) if cp.book_id is not None else None,
-            chapter_id=int(cp.chapter_id) if cp.chapter_id is not None else None,
-            chapter_ord=int(ch.ord) if (ch is not None and ch.ord is not None) else None,
-            chapter_title=ch.title if ch is not None else None,
-        )
-
-    result: Dict[str, ParagraphExtra] = {}
-    for orig, base in base_map.items():
-        extra = by_base.get(base)
-        if extra:
-            result[orig] = extra
-
-    return result
 
 
 def fetch_books_by_ids(ids: List[int]) -> Dict[int, BookCardDto]:
@@ -394,6 +337,11 @@ def fulltext_search(
             chapter_path=chapter_path,
             chapter_title=extra.chapter_title if extra else None,
             snippet=snippet_html,
+
+            paragraph_id=extra.paragraph_id if extra else None,
+            para_start=extra.para_start if extra else None,
+            para_end=extra.para_end if extra else None,
+            para_index_in_chapter=extra.para_index_in_chapter if extra else None,
         )
 
         quote_hits.append(
@@ -553,6 +501,11 @@ def semantic_search(
             chapter_path=chapter_path,
             chapter_title=extra.chapter_title if extra else None,
             snippet=snippet_text or "",
+
+            paragraph_id=extra.paragraph_id if extra else None,
+            para_start=extra.para_start if extra else None,
+            para_end=extra.para_end if extra else None,
+            para_index_in_chapter=extra.para_index_in_chapter if extra else None,
         )
 
         hits.append(

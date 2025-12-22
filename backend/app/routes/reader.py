@@ -3,15 +3,15 @@ from fastapi import HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import List, Dict, Any
 
 from app.config import BOOKS_CONTENT_DIR, IDX_CONTENT
 from app.dtos.reader_dtos import GetChaptersResponse, ChapterDto, InBookSearchResponseDTO, InBookSearchHitDTO
 from app.dtos.search_dtos import SnippetDTO
 from app.integrations.database import get_db_session
-from app.integrations.orm import EditionChapter, Edition, ContentParagraph
+from app.integrations.orm import EditionChapter, Edition
 from app.integrations.elasticsearch import es_post
-from sqlalchemy.orm import joinedload
+from app.utils.paragraph_extras import fetch_paragraph_extras
 
 router = APIRouter(prefix="/reader")
 
@@ -24,62 +24,6 @@ def _chapter_file_exists(book_id: int, chapter_id: int) -> bool:
     if not BOOKS_ROOT:
         return False
     return (BOOKS_ROOT / str(book_id) / f"{chapter_id}.xml").exists()
-
-
-class ParagraphExtra:
-    def __init__(
-        self,
-        book_id: Optional[int],
-        chapter_id: Optional[int],
-        chapter_ord: Optional[int],
-        chapter_title: Optional[str],
-    ):
-        self.book_id = book_id
-        self.chapter_id = chapter_id
-        self.chapter_ord = chapter_ord
-        self.chapter_title = chapter_title
-
-
-def fetch_paragraph_extras(doc_ids: List[str]) -> Dict[str, ParagraphExtra]:
-    if not doc_ids:
-        return {}
-
-    base_map: Dict[str, str] = {}
-    base_ids: List[str] = []
-    for d in doc_ids:
-        parts = d.split(":")
-        base = ":".join(parts[:3]) if len(parts) >= 4 else d
-        base_map[d] = base
-        if base not in base_ids:
-            base_ids.append(base)
-
-    with get_db_session() as db:
-        stmt = (
-            select(ContentParagraph)
-            .where(ContentParagraph.es_doc_id.in_(base_ids))
-            .options(joinedload(ContentParagraph.chapter))
-        )
-        rows = db.execute(stmt).scalars().all()
-
-    by_base: Dict[str, ParagraphExtra] = {}
-    for cp in rows:
-        if not cp.es_doc_id:
-            continue
-        ch = cp.chapter
-        by_base[cp.es_doc_id] = ParagraphExtra(
-            book_id=int(cp.book_id) if cp.book_id is not None else None,
-            chapter_id=int(cp.chapter_id) if cp.chapter_id is not None else None,
-            chapter_ord=int(ch.ord) if (ch is not None and ch.ord is not None) else None,
-            chapter_title=ch.title if ch is not None else None,
-        )
-
-    result: Dict[str, ParagraphExtra] = {}
-    for orig, base in base_map.items():
-        extra = by_base.get(base)
-        if extra:
-            result[orig] = extra
-
-    return result
 
 
 
@@ -199,6 +143,11 @@ def search_in_book(
             chapter_path=chapter_path,
             chapter_title=extra.chapter_title if extra else None,
             snippet=snippet_html,
+
+            paragraph_id=extra.paragraph_id if extra else None,
+            para_start=extra.para_start if extra else None,
+            para_end=extra.para_end if extra else None,
+            para_index_in_chapter=extra.para_index_in_chapter if extra else None,
         )
 
         hits.append(InBookSearchHitDTO(score=score, snippet=snippet))
