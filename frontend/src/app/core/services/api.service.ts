@@ -10,7 +10,11 @@ export class ApiService {
     private http = inject(HttpClient);
     private baseUrl = environment.apiUrl;
 
-    get<T>(path: string, params: Record<string, any> = {}): Observable<T> {
+    get<T>(
+        path: string,
+        params: Record<string, any> = {},
+        responseType: 'json' | 'text' = 'json'
+    ): Observable<T> {
         let httpParams = new HttpParams();
         Object.keys(params).forEach((key) => {
             if (params[key] !== null && params[key] !== undefined) {
@@ -20,6 +24,7 @@ export class ApiService {
 
         return this.http.get<T>(`${this.baseUrl}${path}`, {
             params: httpParams,
+            responseType: responseType as any,
         });
     }
 }

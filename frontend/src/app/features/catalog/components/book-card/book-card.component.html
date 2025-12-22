@@ -11,6 +11,9 @@
     <div class="info">
         <h3 class="title" [title]="book.title">{{ book.title }}</h3>
         <p class="author">{{ book.authors }}</p>
-        <button class="details-btn" (click)="onDetailsClick($event)">Подробнее</button>
+        <div class="actions">
+            <button class="read-btn" (click)="onReadClick($event)">Читать</button>
+            <button class="details-btn" (click)="onDetailsClick($event)">Подробнее</button>
+        </div>
     </div>
 </div>

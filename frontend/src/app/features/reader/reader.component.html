@@ -1,0 +1,46 @@
+<div class="reader-wrapper">
+
+    <aside class="sidebar" [class.open]="isSidebarOpen">
+        <div class="sidebar-header">
+            <h3>Содержание</h3>
+            <button class="close-btn" (click)="toggleSidebar()">&times;</button>
+        </div>
+        <ul class="toc-list">
+            @for (chapter of chaptersList.chapters; track chapter.chapter_id; let i = $index) {
+            <li [class.active]="i === currentChapterIndex" (click)="selectChapter(i)">
+                {{ chapter.title }}
+            </li>
+            }
+        </ul>
+    </aside>
+
+    @if (isSidebarOpen) {
+    <div class="backdrop" (click)="toggleSidebar()"></div>
+    }
+
+    <main class="reader-main">
+        <header class="reader-controls">
+            <button class="menu-btn" (click)="toggleSidebar()">☰ Оглавление</button>
+            <div class="settings">
+                <button (click)="fontSize = fontSize - 2">A-</button>
+                <span class="fs-label">{{fontSize}}px</span>
+                <button (click)="fontSize = fontSize + 2">A+</button>
+            </div>
+            <button class="exit-btn" (click)="exitReader()">Выход</button>
+        </header>
+
+        <div class="book-viewport">
+
+            @if (isLoading) {
+            <div class="loading-state">Загрузка главы...</div>
+            }
+            <div #bookContainer class="book-content" [style.font-size.px]="fontSize" [innerHTML]="safeContent">
+            </div>
+
+        </div>
+
+        <button class="nav-btn prev" (click)="prevPage()">‹</button>
+        <button class="nav-btn next" (click)="nextPage()">›</button>
+
+    </main>
+</div>
