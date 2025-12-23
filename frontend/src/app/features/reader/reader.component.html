@@ -1,0 +1,82 @@
+<div class="reader-wrapper">
+
+    <aside class="sidebar" [class.open]="isSidebarOpen">
+        <div class="sidebar-header">
+            <h3>Содержание</h3>
+            <button class="close-btn" (click)="toggleSidebar()">&times;</button>
+        </div>
+        <ul class="toc-list">
+            @for (chapter of chaptersList.chapters; track chapter.chapter_id; let i = $index) {
+            <li [class.active]="i === currentChapterIndex" (click)="selectChapter(i)">
+                {{ chapter.title }}
+            </li>
+            }
+        </ul>
+    </aside>
+
+    @if (isSidebarOpen) {
+    <div class="backdrop" (click)="toggleSidebar()"></div>
+    }
+    @if (isSearchOpen) {
+    <div class="backdrop-search" (click)="toggleSearch()"></div>
+    }
+
+    <main class=" reader-main">
+        <header class="reader-controls">
+            <button class="menu-btn" (click)="toggleSidebar()">☰ Оглавление</button>
+
+            <div class="search-box">
+                <button class="icon-btn" (click)="toggleSearch()" [class.active]="isSearchOpen">
+                    🔍
+                </button>
+
+                @if (isSearchOpen) {
+                <div class="search-dropdown">
+                    <div class="search-input-row">
+                        <input type="text" placeholder="Найти в книге..." [(ngModel)]="searchQuery"
+                            (keydown.enter)="performInBookSearch()" autofocus>
+                        <button (click)="performInBookSearch()">Go</button>
+                    </div>
+
+                    <div class="search-results-list">
+                        @if (isSearching) {
+                        <div class="loading">Ищем...</div>
+                        } @else if (searchResults.length === 0 && searchQuery) {
+                        <div class="no-results">Ничего не найдено</div>
+                        } @else {
+                        @for (hit of searchResults; track $index) {
+                        <div class="search-item" (click)="goToSearchResult(hit)">
+                            <div class="item-chapter">
+                                {{ hit.snippet.chapter_title || 'Глава ' + hit.snippet.chapter_ord }}
+                            </div>
+                            <div class="item-text" [innerHTML]="hit.snippet.snippet"></div>
+                        </div>
+                        }
+                        }
+                    </div>
+                </div>
+                }
+            </div>
+            <div class="settings">
+                <button (click)="fontSize = fontSize - 2">A-</button>
+                <span class="fs-label">{{fontSize}}px</span>
+                <button (click)="fontSize = fontSize + 2">A+</button>
+            </div>
+            <button class="exit-btn" (click)="exitReader()">Выход</button>
+        </header>
+
+        <div class="book-viewport">
+
+            @if (isLoading) {
+            <div class="loading-state">Загрузка главы...</div>
+            }
+            <div #bookContainer class="book-content" [style.font-size.px]="fontSize" [innerHTML]="safeContent">
+            </div>
+
+        </div>
+
+        <button class="nav-btn prev" (click)="prevPage()">‹</button>
+        <button class="nav-btn next" (click)="nextPage()">›</button>
+
+    </main>
+</div>

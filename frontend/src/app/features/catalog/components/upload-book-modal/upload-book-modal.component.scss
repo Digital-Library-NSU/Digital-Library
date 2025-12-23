@@ -40,7 +40,7 @@ input[type="file"] {
 }
 
 .upload-btn {
-    background: var(--primary-text-color);
+    background-color: var(--primary-text-color);
     color: white;
     border: none;
     padding: 12px 24px;
@@ -48,17 +48,17 @@ input[type="file"] {
     font-size: 1rem;
     cursor: pointer;
     width: 100%;
-    transition: background 0.2s;
+    transition: background-color 0.2s;
 
     &:disabled {
-        background: #95a5a6;
+        background-color: #95a5a6;
         cursor: not-allowed;
     }
     &:hover:not(:disabled) {
-        background: var(--primary-hover-color);
+        background-color: var(--primary-hover-color);
     }
     &.success {
-        background: #27ae60;
+        background-color: #27ae60;
     }
 }
 
