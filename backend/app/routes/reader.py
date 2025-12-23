@@ -3,7 +3,10 @@ from fastapi import HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
+
+import re
+import html as _html
 
 from app.config import BOOKS_CONTENT_DIR, IDX_CONTENT
 from app.dtos.reader_dtos import GetChaptersResponse, ChapterDto, InBookSearchResponseDTO, InBookSearchHitDTO
@@ -15,8 +18,6 @@ from app.utils.paragraph_extras import fetch_paragraph_extras
 
 router = APIRouter(prefix="/reader")
 
-
-
 BOOKS_ROOT = Path(BOOKS_CONTENT_DIR).expanduser() if BOOKS_CONTENT_DIR else None
 
 
@@ -25,6 +26,45 @@ def _chapter_file_exists(book_id: int, chapter_id: int) -> bool:
         return False
     return (BOOKS_ROOT / str(book_id) / f"{chapter_id}.xml").exists()
 
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_EM_RE = re.compile(r"(?is)<em>(.*?)</em>")
+_WS_RE = re.compile(r"\s+")
+
+
+def _canonical_highlight(html_snippet: str, max_len: int = 220) -> str:
+    if not html_snippet:
+        return ""
+
+    s = _EM_RE.sub(r"@@\1@@", html_snippet)
+    s = _TAG_RE.sub(" ", s)
+    s = _html.unescape(s)
+    s = s.replace("\u00a0", " ").lower()
+    s = _WS_RE.sub(" ", s).strip()
+
+    anchor = s.find("@@")
+    if anchor != -1:
+        s = s[anchor:]
+
+    s = s.replace("@@", "")
+
+    return s[:max_len].strip()
+
+
+def _same_highlight(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if a.startswith(b) or b.startswith(a):
+        return True
+    if a in b or b in a:
+        return True
+    return False
+
+
+def _chapter_key(sn: SnippetDTO) -> str:
+    return sn.chapter_path or f"ord:{sn.chapter_ord}"
 
 
 @router.get("/{book_id}/search", response_model=InBookSearchResponseDTO)
@@ -37,12 +77,10 @@ def search_in_book(
     min_score: float = Query(0.0, ge=0.0, description="Порог релевантности ES (отсекает слабые совпадения)"),
     fuzzy_fallback: bool = Query(True, description="Если match_phrase не дал результатов — попробовать fuzzy match"),
 ):
-
     with get_db_session() as db:
         edition_id = db.execute(select(Edition.id).where(Edition.book_id == book_id)).scalar_one_or_none()
         if edition_id is None:
             raise HTTPException(404, "Not found!")
-
 
     content_filter: List[Dict[str, Any]] = [{"term": {"book_id": str(book_id)}}]
 
@@ -102,10 +140,8 @@ def search_in_book(
             body["min_score"] = float(min_score)
         return es_post(f"{IDX_CONTENT}/_search", body)
 
-
     res = _do_es_search(phrase_query)
     hits_raw = res.get("hits", {}).get("hits", [])
-
 
     if fuzzy_fallback and not hits_raw:
         res = _do_es_search(fuzzy_query)
@@ -115,7 +151,8 @@ def search_in_book(
     para_extras = fetch_paragraph_extras(doc_ids)
 
 
-    hits: List[InBookSearchHitDTO] = []
+    hits_with_key: List[Tuple[InBookSearchHitDTO, str]] = []
+
     for h in hits_raw:
         src = h.get("_source", {}) or {}
         score = float(h.get("_score") or 0.0)
@@ -135,6 +172,7 @@ def search_in_book(
 
         hl_list = h.get("highlight", {}).get("content", [])
         snippet_html = hl_list[0] if hl_list else ""
+        canon_hl = _canonical_highlight(snippet_html)
 
         snippet = SnippetDTO(
             doc_id=doc_id,
@@ -150,9 +188,39 @@ def search_in_book(
             para_index_in_chapter=extra.para_index_in_chapter if extra else None,
         )
 
-        hits.append(InBookSearchHitDTO(score=score, snippet=snippet))
+        hits_with_key.append((InBookSearchHitDTO(score=score, snippet=snippet), canon_hl))
 
-    hits.sort(key=lambda x: x.score, reverse=True)
+    hits_with_key.sort(key=lambda x: x[0].score, reverse=True)
+
+    kept: List[Tuple[InBookSearchHitDTO, str]] = []
+    best_by_chapter_start: Dict[str, Dict[int, Tuple[InBookSearchHitDTO, str]]] = {}
+
+    for hit, canon_hl in hits_with_key:
+        sn = hit.snippet
+        if sn.para_start is None:
+            kept.append((hit, canon_hl))
+            continue
+
+        ck = _chapter_key(sn)
+        start = int(sn.para_start)
+
+        chapter_map = best_by_chapter_start.get(ck)
+        if chapter_map is None:
+            chapter_map = {}
+            best_by_chapter_start[ck] = chapter_map
+
+        left = chapter_map.get(start - 1)
+        right = chapter_map.get(start + 1)
+
+        if left is not None and _same_highlight(canon_hl, left[1]):
+            continue
+        if right is not None and _same_highlight(canon_hl, right[1]):
+            continue
+
+        chapter_map[start] = (hit, canon_hl)
+        kept.append((hit, canon_hl))
+
+    hits = [h for (h, _) in kept]
 
     return InBookSearchResponseDTO(total=len(hits), hits=hits)
 
