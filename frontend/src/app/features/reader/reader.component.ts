@@ -11,11 +11,15 @@ import { CommonModule } from '@angular/common';
 import { ActivatedRoute, Router } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { ReaderService } from '../../core/services/reader.service';
-import { Chapter, ChaptersList } from '../../shared/models/reader.model';
+import {
+    ChaptersList,
+    InBookSearchHit,
+} from '../../shared/models/reader.model';
+import { FormsModule } from '@angular/forms';
 
 @Component({
     selector: 'app-reader',
-    imports: [CommonModule],
+    imports: [CommonModule, FormsModule],
     templateUrl: './reader.component.html',
     styleUrl: './reader.component.scss',
     encapsulation: ViewEncapsulation.None,
@@ -39,6 +43,12 @@ export class ReaderComponent implements OnInit {
     isSidebarOpen = false;
 
     fontSize = 18;
+    private readonly COLUMN_GAP = 80;
+
+    isSearchOpen = false;
+    isSearching = false;
+    searchQuery = '';
+    searchResults: InBookSearchHit[] = [];
 
     ngOnInit() {
         this.bookId = Number(this.route.snapshot.paramMap.get('id'));
@@ -72,7 +82,11 @@ export class ReaderComponent implements OnInit {
         });
     }
 
-    loadChapter(chapterId: number, scrollToEnd: boolean = false) {
+    loadChapter(
+        chapterId: number,
+        scrollToEnd: boolean = false,
+        onSuccess?: () => void
+    ) {
         this.isLoading = true;
         this.currentChapterId = chapterId;
 
@@ -103,6 +117,10 @@ export class ReaderComponent implements OnInit {
                         } else {
                             this.bookContainer.nativeElement.scrollLeft = 0;
                         }
+                        if (onSuccess) {
+                            // вызовется после рендера
+                            onSuccess();
+                        }
                     }
                 });
             },
@@ -119,7 +137,10 @@ export class ReaderComponent implements OnInit {
         const currentScroll = container.scrollLeft + pageWidth;
 
         if (currentScroll < container.scrollWidth - 10) {
-            container.scrollBy({ left: pageWidth + 80, behavior: 'smooth' });
+            container.scrollBy({
+                left: pageWidth + this.COLUMN_GAP,
+                behavior: 'smooth',
+            });
         } else {
             this.goToNextChapter();
         }
@@ -130,7 +151,10 @@ export class ReaderComponent implements OnInit {
         const pageWidth = container.clientWidth;
 
         if (container.scrollLeft > 0) {
-            container.scrollBy({ left: -(pageWidth + 80), behavior: 'smooth' });
+            container.scrollBy({
+                left: -(pageWidth + this.COLUMN_GAP),
+                behavior: 'smooth',
+            });
         } else {
             this.goToPrevChapter();
         }
@@ -154,6 +178,78 @@ export class ReaderComponent implements OnInit {
                 true
             );
         }
+    }
+
+    toggleSearch() {
+        this.isSearchOpen = !this.isSearchOpen;
+    }
+
+    performInBookSearch() {
+        const query = this.searchQuery.trim();
+        if (!query) return;
+
+        this.isSearching = true;
+        this.readerService.searchInBook(this.bookId, query).subscribe({
+            next: (response) => {
+                this.searchResults = response.hits;
+                this.isSearching = false;
+            },
+            error: (err) => {
+                console.error('Search error', err);
+                this.isSearching = false;
+            },
+        });
+    }
+
+    goToSearchResult(hit: InBookSearchHit) {
+        const snippet = hit.snippet;
+        const targetIndex = snippet.chapter_ord - 2;
+        const targetChapter = this.chaptersList.chapters[targetIndex];
+
+        if (!targetChapter) {
+            console.error('Chapter not found for index', targetIndex);
+            return;
+        }
+
+        const paraIndex = (snippet.para_index_in_chapter ?? 0) + 1;
+
+        if (this.currentChapterIndex === targetIndex) {
+            this.scrollToParagraph(paraIndex);
+        } else {
+            this.currentChapterIndex = targetIndex;
+            this.loadChapter(targetChapter.chapter_id, false, () => {
+                this.scrollToParagraph(paraIndex);
+            });
+        }
+
+        this.isSearchOpen = false;
+    }
+
+    private scrollToParagraph(paraIndex: number) {
+        setTimeout(() => {
+            const container = this.bookContainer.nativeElement;
+            const paragraphs = container.querySelectorAll('p');
+
+            if (paragraphs[paraIndex]) {
+                const targetEl = paragraphs[paraIndex] as HTMLElement;
+
+                const elementOffset = targetEl.offsetLeft;
+
+                const pageWidth = container.clientWidth;
+                const stride = pageWidth + this.COLUMN_GAP;
+
+                const pageIndex = Math.floor(elementOffset / pageWidth);
+
+                container.scrollTo({
+                    left: pageIndex * stride,
+                    behavior: 'smooth',
+                });
+
+                targetEl.style.backgroundColor = 'rgba(255, 235, 59, 0.5)';
+                targetEl.style.transition = 'background-color 0.5s';
+                setTimeout(() => (targetEl.style.backgroundColor = ''), 2000);
+            }
+        }, 150);
     }
 
     toggleSidebar() {
