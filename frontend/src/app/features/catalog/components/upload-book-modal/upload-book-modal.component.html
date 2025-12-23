@@ -6,9 +6,31 @@
 
         @if (!isSuccess) {
         <div class="upload-form">
-            <p class="hint">Выберите .epub файл для загрузки</p>
+            <input type="file" id="fileInput" class="hidden-input" accept=".epub" (change)="onFileSelected($event)"
+                [disabled]="isUploading">
 
-            <input type="file" accept=".epub" (change)="onFileSelected($event)" [disabled]="isUploading" #fileInput>
+            <label for="fileInput" class="custom-file-upload" [class.disabled]="isUploading"
+                [class.drag-over]="isDragOver" (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)"
+                (drop)="onDrop($event)">
+                <div class="icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                </div>
+
+                <div class="text-content">
+                    @if (selectedFile) {
+                    <span class="filename">{{ selectedFile.name }}</span>
+                    <span class="change-hint">Нажмите, чтобы заменить</span>
+                    } @else {
+                    <span class="upload-title">Выберите файл .epub</span>
+                    <span class="upload-subtitle"></span>
+                    }
+                </div>
+            </label>
 
             @if (errorMessage) {
             <div class="error-alert">

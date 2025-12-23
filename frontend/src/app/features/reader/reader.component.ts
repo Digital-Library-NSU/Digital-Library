@@ -245,9 +245,9 @@ export class ReaderComponent implements OnInit {
                     behavior: 'smooth',
                 });
 
-                targetEl.style.backgroundColor = 'rgba(255, 235, 59, 0.5)';
-                targetEl.style.transition = 'background-color 0.5s';
-                setTimeout(() => (targetEl.style.backgroundColor = ''), 2000);
+                // targetEl.style.backgroundColor = 'rgba(255, 235, 59, 0.5)';
+                // targetEl.style.transition = 'background-color 0.5s';
+                // setTimeout(() => (targetEl.style.backgroundColor = ''), 2000);
             }
         }, 150);
     }

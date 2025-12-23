@@ -17,6 +17,7 @@ export class UploadBookModalComponent {
     selectedFile: File | null = null;
     isUploading = false;
     isSuccess = false;
+    isDragOver = false;
     errorMessage = '';
 
     onFileSelected(event: any) {
@@ -54,5 +55,36 @@ export class UploadBookModalComponent {
 
     closeModal() {
         this.close.emit(this.isSuccess);
+    }
+
+    onDragOver(event: DragEvent) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.isDragOver = true;
+    }
+
+    onDragLeave(event: DragEvent) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.isDragOver = false;
+    }
+
+    onDrop(event: DragEvent) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.isDragOver = false;
+
+        const files = event.dataTransfer?.files;
+        if (files && files.length > 0) {
+            const file = files[0];
+
+            if (file.name.endsWith('.epub')) {
+                this.selectedFile = file;
+                this.errorMessage = '';
+            } else {
+                this.errorMessage = 'Загрузите файл с расширением .epub';
+                this.selectedFile = null;
+            }
+        }
     }
 }
