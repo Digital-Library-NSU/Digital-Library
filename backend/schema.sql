@@ -1,4 +1,4 @@
--- === базовая схема Postgres ===
+-- === Books ===
 
 CREATE TABLE IF NOT EXISTS authors (
   id        BIGSERIAL PRIMARY KEY,
@@ -79,3 +79,20 @@ CREATE INDEX IF NOT EXISTS idx_books_subjects ON books USING GIN (subjects);
 CREATE INDEX IF NOT EXISTS idx_editions_book ON editions (book_id);
 CREATE INDEX IF NOT EXISTS idx_chapters_ed ON edition_chapters (edition_id, ord);
 CREATE INDEX IF NOT EXISTS idx_paragraphs_book_start ON content_paragraphs (book_id, para_start);
+
+-- === Users ===
+
+CREATE TYPE user_role AS ENUM('user', 'admin');
+
+CREATE TABLE IF NOT EXISTS users (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    login           VARCHAR(255) NOT NULL UNIQUE,
+    hashed_password VARCHAR(60) NOT NULL,
+    role            user_role DEFAULT 'user' NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID REFERENCES users(id) NOT NULL,
+    created_time    TIMESTAMP DEFAULT now() NOT NULL
+);

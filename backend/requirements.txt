@@ -1,6 +1,7 @@
 # FastAPI backend
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.29
+bcrypt
 
 # HTTP + .env
 requests>=2.31

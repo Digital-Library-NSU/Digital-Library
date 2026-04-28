@@ -23,3 +23,4 @@ def get_pg():
         _pg_conn = psycopg2.connect(PG_DSN)
         _pg_conn.autocommit = True
     return _pg_conn
+
