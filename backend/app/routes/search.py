@@ -1,11 +1,10 @@
 import asyncio
-from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, Query, HTTPException
 from sqlalchemy import select
 
-from app.config import IDX_CONTENT, IDX_META, BOOKS_CONTENT_DIR
+from app.config import IDX_CONTENT, IDX_META
 from app.dtos.books_dtos import BookCardDto
 from app.dtos.search_dtos import (
     SnippetDTO,
@@ -17,29 +16,21 @@ from app.dtos.search_dtos import (
 from app.integrations.database import get_db_session
 from app.integrations.elasticsearch import es_post
 from app.integrations.embed_model import _HAS_ST, encode_query
+from app.integrations.object_storage import find_cover_key
 from app.integrations.orm import Book
 from app.utils.paragraph_extras import fetch_paragraph_extras
 from app.utils.search_highlight import CONTENT_HIT_SOURCE, resolve_hit_block_index
 
 router = APIRouter(prefix="/search")
 
-BOOKS_ROOT = Path(BOOKS_CONTENT_DIR).expanduser() if BOOKS_CONTENT_DIR else None
 
+async def _get_cover_path(book_id: int) -> str | None:
+    cover_key = await find_cover_key(book_id)
 
-def _get_cover_path(book_id: int) -> str | None:
-    if not BOOKS_ROOT:
+    if cover_key is None:
         return None
 
-    base_dir = BOOKS_ROOT / str(book_id)
-    if not base_dir.exists():
-        return None
-
-    for ext in (".jpg", ".jpeg", ".png", ".webp"):
-        candidate = base_dir / f"cover{ext}"
-        if candidate.exists():
-            return f"/books_content/{book_id}/cover{ext}"
-
-    return None
+    return f"/books/{book_id}/cover"
 
 
 async def fetch_books_by_ids(ids: List[int]) -> Dict[int, BookCardDto]:
@@ -49,36 +40,32 @@ async def fetch_books_by_ids(ids: List[int]) -> Dict[int, BookCardDto]:
     async with get_db_session() as db:
         stmt = select(Book).where(Book.id.in_(ids))
         result = await db.execute(stmt)
-        books = result.scalars().all()
+        books = list(result.scalars())
+
+    cover_paths = [
+        await _get_cover_path(int(book.id))
+        for book in books
+    ]
 
     by_id: Dict[int, BookCardDto] = {}
 
-    for b in books:
+    for idx, b in enumerate(books):
         bid = int(b.id)
         by_id[bid] = BookCardDto(
             book_id=bid,
             title=b.title,
-            cover_path=_get_cover_path(bid),
+            cover_path=cover_paths[idx],
             authors=", ".join(b.authors or []),
         )
 
     return by_id
 
 
-def _chapter_file_exists(book_id: int, chapter_id: int) -> bool:
-    if not BOOKS_ROOT:
-        return False
-    return (BOOKS_ROOT / str(book_id) / f"{chapter_id}.xml").exists()
-
-
 def _chapter_path(book_id: int, chapter_id: int | None) -> str:
     if chapter_id is None:
         return ""
 
-    if not _chapter_file_exists(book_id, chapter_id):
-        return ""
-
-    return f"/books_content/{book_id}/{chapter_id}.xml"
+    return f"/reader/{book_id}/{chapter_id}"
 
 
 @router.get("/fulltext", response_model=FullTextResponseDTO)

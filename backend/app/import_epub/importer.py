@@ -10,6 +10,13 @@ from bs4 import BeautifulSoup
 import torch
 from sentence_transformers import SentenceTransformer
 
+from app.integrations.object_storage import (
+    book_cover_key,
+    chapter_key,
+    cover_content_type,
+    put_bytes_sync,
+)
+
 from .text_utils import (
     html_to_indexed_blocks,
     coalesce_short_paragraphs,
@@ -212,6 +219,13 @@ def _fallback_book_title(file_path: Path, meta_title: Optional[str]) -> str:
         return meta_title
     return Path(file_path).stem
 
+def _read_zip_resource(z: zipfile.ZipFile, meta: Dict, href: str) -> tuple[bytes, str]:
+    try:
+        return z.read(href), href
+    except KeyError:
+        opf_dir = Path(meta.get("opf_path") or "").parent
+        alt = str(opf_dir / href) if str(opf_dir) not in ("", ".") else href
+        return z.read(alt), alt
 
 def _preflight_check_spine_missing(z: zipfile.ZipFile, meta: Dict, args, file_name: str) -> bool:
     missing = 0
@@ -262,6 +276,35 @@ def _connect_from_args(args):
     return psycopg2.connect(dsn)
 
 
+def _upload_cover_to_storage(z: zipfile.ZipFile, meta: Dict, book_id: int) -> None:
+    cover_href = meta.get("cover_href")
+
+    if not cover_href:
+        return
+
+    try:
+        cover_bytes, resolved_href = _read_zip_resource(z, meta, cover_href)
+    except KeyError:
+        print(f"[WARN] cover image not found in ZIP: {cover_href}", file=sys.stderr)
+        return
+
+    ext = Path(resolved_href).suffix or ".jpg"
+
+    put_bytes_sync(
+        key=book_cover_key(book_id, ext),
+        data=cover_bytes,
+        content_type=cover_content_type(ext),
+    )
+
+
+def _upload_chapter_to_storage(book_id: int, chapter_id: int, html: str) -> None:
+    _blocks, annotated_html = html_to_indexed_blocks(html)
+
+    put_bytes_sync(
+        key=chapter_key(book_id, chapter_id),
+        data=annotated_html.encode("utf-8"),
+        content_type="application/xhtml+xml; charset=utf-8",
+    )
 
 def process_epub(file_path: Path, args):
     conn = _connect_from_args(args)
@@ -269,11 +312,6 @@ def process_epub(file_path: Path, args):
     try:
         idx_meta: str = args.es_index_meta
         idx_content: str = args.es_index_content
-
-        export_root: Optional[Path] = None
-        if getattr(args, "export_root", None):
-            export_root = Path(args.export_root).expanduser()
-            export_root.mkdir(parents=True, exist_ok=True)
 
         print(f"[INFO] Processing EPUB: {file_path.name}")
 
@@ -290,49 +328,35 @@ def process_epub(file_path: Path, args):
                 return "skipped"
 
             with conn.cursor() as cur:
-                # 2) книга
+                # 2) Book
                 book_id = find_or_insert_book(cur, meta, meta["subjects"])
+                try:
+                    _upload_cover_to_storage(z, meta, book_id)
+                except Exception as e:
+                    print(f"[WARN] cannot upload cover to storage for book {book_id}: {e}", file=sys.stderr)
 
-                book_export_dir: Optional[Path] = None
-                if export_root is not None:
-                    book_export_dir = export_root / str(book_id)
-                    book_export_dir.mkdir(parents=True, exist_ok=True)
-
-                    cover_href = meta.get("cover_href")
-                    if cover_href:
-                        try:
-                            cover_bytes = z.read(cover_href)
-                            ext = Path(cover_href).suffix or ".jpg"
-                            cover_path = book_export_dir / f"cover{ext}"
-                            with open(cover_path, "wb") as f:
-                                f.write(cover_bytes)
-                        except KeyError:
-                            print(f"[WARN] cover image not found in ZIP: {cover_href}", file=sys.stderr)
-
-                # 3) главы
+                # 3) Chapters + upload annotated chapter XML to MinIO
                 chapter_ids: List[Optional[int]] = []
+
                 for idx, (href, media_type) in enumerate(meta["spine"], start=1):
                     if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
                         chapter_ids.append(None)
                         continue
 
+                    try:
+                        raw, resolved_href = _read_zip_resource(z, meta, href)
+                    except KeyError:
+                        chapter_ids.append(None)
+                        continue
+
+                    html = raw.decode("utf-8", errors="ignore")
+
                     chap_title = None
                     try:
-                        raw = z.read(href)
-                    except KeyError:
-                        alt = str(Path(Path(meta["opf_path"]).parent) / href)
-                        try:
-                            raw = z.read(alt)
-                            href = alt
-                        except KeyError:
-                            chapter_ids.append(None)
-                            continue
-
-                    try:
-                        html = raw.decode("utf-8", errors="ignore")
                         soup = BeautifulSoup(html, "lxml")
                         h = soup.find(["h1", "h2", "title"])
                         chap_title = (h.get_text() if h else None) if h else None
+
                         if chap_title:
                             chap_title = chap_title.strip()
                     except Exception:
@@ -341,28 +365,26 @@ def process_epub(file_path: Path, args):
                     cid = insert_chapter(cur, book_id, idx, chap_title)
                     chapter_ids.append(cid)
 
-                    if book_export_dir is not None and cid is not None:
-                        chapter_file = book_export_dir / f"{cid}.xml"
+                    if cid is not None:
                         try:
-                            html = raw.decode("utf-8", errors="ignore")
-                            _blocks_for_markup, annotated_html = html_to_indexed_blocks(html)
-
-                            with open(chapter_file, "w", encoding="utf-8") as f:
-                                f.write(annotated_html)
+                            _upload_chapter_to_storage(book_id, cid, html)
                         except Exception as e:
-                            print(f"[WARN] cannot write annotated chapter {cid} xml: {e}", file=sys.stderr)
+                            print(f"[WARN] cannot upload chapter {cid} xml to storage: {e}", file=sys.stderr)
 
-                # 4) ES: метадок книги
+                # 4) ES meta document
                 book_title_for_es = _fallback_book_title(file_path, meta.get("title"))
+
                 if not args.no_es:
                     authors = meta["creators"]
                     pub_year = None
                     pd = parse_date(meta["date_raw"])
+
                     if pd:
                         try:
                             pub_year = int(pd[:4])
                         except Exception:
                             pub_year = None
+
                     meta_doc = {
                         "book_id": str(book_id),
                         "title": book_title_for_es,
@@ -376,7 +398,7 @@ def process_epub(file_path: Path, args):
                 else:
                     meta_doc = {}
 
-                # 5) ES: контент
+                # 5) ES content documents + Postgres paragraph metadata
                 content_docs: List[Dict] = []
                 texts_for_embed: List[str] = []
                 words_running = 0
@@ -389,17 +411,14 @@ def process_epub(file_path: Path, args):
                         continue
 
                     try:
-                        raw = z.read(href)
+                        raw, resolved_href = _read_zip_resource(z, meta, href)
                     except KeyError:
-                        alt = str(Path(Path(meta["opf_path"]).parent) / href)
-                        try:
-                            raw = z.read(alt)
-                            href = alt
-                        except KeyError:
-                            missing += 1
-                            if missing <= max_warn:
-                                print(f"[WARN] missing spine resource {href}", file=sys.stderr)
-                            continue
+                        missing += 1
+
+                        if missing <= max_warn:
+                            print(f"[WARN] missing spine resource {href}", file=sys.stderr)
+
+                        continue
 
                     html = raw.decode("utf-8", errors="ignore")
                     chapter_id = chapter_ids[c_idx - 1] if c_idx - 1 < len(chapter_ids) else None
@@ -410,11 +429,16 @@ def process_epub(file_path: Path, args):
                         blocks = coalesce_short_paragraphs(blocks, args.min_paragraph_words)
 
                     block_token_counts = [len(tokenize_words(block.text)) for block in blocks]
+
                     prefix = [0]
                     for c in block_token_counts:
                         prefix.append(prefix[-1] + c)
 
-                    wins = paragraph_windows(blocks, args.para_window_size, args.para_window_stride)
+                    wins = paragraph_windows(
+                        blocks,
+                        args.para_window_size,
+                        args.para_window_stride,
+                    )
 
                     base_offset = words_running
 
@@ -434,36 +458,30 @@ def process_epub(file_path: Path, args):
 
                         base_doc_id = f"{book_id}:{c_idx}:{win_idx}"
 
-                        subtexts = [para_text]
-                        if args.embed_model and args.embed_max_words > 0:
-                            from .text_utils import split_by_words
-                            subtexts = split_by_words(para_text, args.embed_max_words, args.embed_overlap_words)
+                        content_docs.append(
+                            {
+                                "_id": base_doc_id,
+                                "book_id": str(book_id),
 
-                        for k, chunk_text in enumerate(subtexts):
-                            doc_id = base_doc_id if k == 0 and len(subtexts) == 1 else f"{base_doc_id}:{k}"
+                                "chapter_id": chapter_id,
+                                "chapter_ord": c_idx,
 
-                            content_docs.append(
-                                {
-                                    "_id": doc_id,
-                                    "book_id": str(book_id),
-                                    "chapter_id": chapter_id,
-                                    "chapter_ord": c_idx,
-                                    "lang": meta["language"] or "",
-                                    "title": book_title_for_es,
-                                    "content": chunk_text,
-                                    "length": len(chunk_text),
+                                "lang": meta["language"] or "",
+                                "title": book_title_for_es,
+                                "content": para_text,
+                                "length": len(para_text),
 
-                                    "block_start": block_start,
-                                    "block_end": block_end,
-                                    "block_offsets": block_offsets,
+                                "block_start": block_start,
+                                "block_end": block_end,
+                                "block_offsets": block_offsets,
 
-                                    "para_type": kind_first,
-                                    "subchunk_idx": k if len(subtexts) > 1 else 0,
-                                }
-                            )
+                                "para_type": kind_first,
+                                "subchunk_idx": 0,
+                            }
+                        )
 
-                            if args.embed_model:
-                                texts_for_embed.append(chunk_text)
+                        if args.embed_model:
+                            texts_for_embed.append(para_text)
 
                         insert_paragraph_meta(
                             cur,
@@ -486,13 +504,14 @@ def process_epub(file_path: Path, args):
                         file=sys.stderr,
                     )
 
-                # 6) эмбеддинги
+                # 6) Embeddings
                 if args.embed_model:
                     enc, enc_dev = get_encoder(args.embed_model, device_mode=args.embed_device)
 
                     if args.es_dense_vector_dim <= 0:
                         enc_dim = get_encoder_dim(args.embed_model, enc_dev)
                         ensure_key = (args.es_url, idx_meta, idx_content, int(enc_dim))
+
                         if not _ES_DIM_ENSURED.get(ensure_key):
                             ensure_es_indices(
                                 args.es_url,
@@ -509,11 +528,11 @@ def process_epub(file_path: Path, args):
                     vecs: List[List[float]] = []
 
                     if torch is not None and hasattr(torch, "inference_mode"):
-                        _ctx = torch.inference_mode
+                        ctx = torch.inference_mode
                     else:
-                        _ctx = torch.no_grad
+                        ctx = torch.no_grad
 
-                    with _ctx():
+                    with ctx():
                         for i in range(0, len(texts_for_embed), batch):
                             chunk = texts_for_embed[i: i + batch]
                             embs = enc.encode(
@@ -528,19 +547,36 @@ def process_epub(file_path: Path, args):
                         d["content_vec"] = vecs[vi]
                         vi += 1
 
-                # 7) commit + bulk
+                # 7) Commit Postgres + bulk ES
                 conn.commit()
+
                 if not args.no_es:
-                    es_bulk_safe(args.es_url, idx_meta, idx_content, meta_doc, content_docs)
+                    es_bulk_safe(
+                        args.es_url,
+                        idx_meta,
+                        idx_content,
+                        meta_doc,
+                        content_docs,
+                    )
+
                 conn.commit()
-                return "ok"
+
+                return {
+                    "status": "ok",
+                    "book_id": book_id,
+                    "title": book_title_for_es,
+                    "chapters": len([cid for cid in chapter_ids if cid is not None]),
+                    "content_docs": len(content_docs),
+                }
 
     except Exception:
         try:
             conn.rollback()
         except Exception:
             pass
+
         raise
+
     finally:
         try:
             conn.close()

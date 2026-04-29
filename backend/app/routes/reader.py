@@ -1,12 +1,11 @@
-from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
 from fastapi import HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from fastapi.routing import APIRouter
 from sqlalchemy import select
 
-from app.config import BOOKS_CONTENT_DIR, IDX_CONTENT
+from app.config import IDX_CONTENT
 from app.dtos.reader_dtos import (
     GetChaptersResponse,
     ChapterDto,
@@ -16,6 +15,7 @@ from app.dtos.reader_dtos import (
 from app.dtos.search_dtos import SnippetDTO
 from app.integrations.database import get_db_session
 from app.integrations.elasticsearch import es_post
+from app.integrations.object_storage import get_object_bytes, chapter_key
 from app.integrations.orm import Book, Chapter
 from app.utils.paragraph_extras import fetch_paragraph_extras
 from app.utils.search_highlight import (
@@ -27,23 +27,11 @@ from app.utils.search_highlight import (
 
 router = APIRouter(prefix="/reader")
 
-BOOKS_ROOT = Path(BOOKS_CONTENT_DIR).expanduser() if BOOKS_CONTENT_DIR else None
-
-
-def _chapter_file_exists(book_id: int, chapter_id: int) -> bool:
-    if not BOOKS_ROOT:
-        return False
-    return (BOOKS_ROOT / str(book_id) / f"{chapter_id}.xml").exists()
-
-
 def _chapter_path(book_id: int, chapter_id: int | None) -> str:
     if chapter_id is None:
         return ""
 
-    if not _chapter_file_exists(book_id, chapter_id):
-        return ""
-
-    return f"/books_content/{book_id}/{chapter_id}.xml"
+    return f"/reader/{book_id}/{chapter_id}"
 
 
 def _chapter_key(sn: SnippetDTO) -> str:
@@ -249,10 +237,15 @@ async def get_chapters(book_id: int) -> GetChaptersResponse:
 
 
 @router.get("/{book_id}/{chapter_id}")
-async def get_chapter(book_id: int, chapter_id: int) -> FileResponse:
-    path = Path(BOOKS_CONTENT_DIR) / str(book_id) / f"{chapter_id}.xml"
+async def get_chapter(book_id: int, chapter_id: int) -> Response:
+    key = chapter_key(book_id, chapter_id)
 
-    if not path.is_file():
+    try:
+        data, content_type = await get_object_bytes(key)
+    except FileNotFoundError:
         raise HTTPException(404, "Not found!")
 
-    return FileResponse(path=path, media_type="application/xhtml+xml")
+    return Response(
+        content=data,
+        media_type=content_type or "application/xhtml+xml",
+    )
