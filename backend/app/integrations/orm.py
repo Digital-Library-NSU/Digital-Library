@@ -1,7 +1,8 @@
 from typing import Optional
 import datetime
+import uuid
 
-from sqlalchemy import ARRAY, BigInteger, Boolean, Date, DateTime, ForeignKeyConstraint, Index, Integer, PrimaryKeyConstraint, Text, UniqueConstraint, text
+from sqlalchemy import ARRAY, BigInteger, Boolean, Date, DateTime, Enum, ForeignKeyConstraint, Index, Integer, PrimaryKeyConstraint, String, Text, UniqueConstraint, Uuid, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -52,6 +53,24 @@ class Book(Base):
         'Edition', back_populates='book')
     content_paragraphs: Mapped[list['ContentParagraph']] = relationship(
         'ContentParagraph', back_populates='book')
+
+
+class User(Base):
+    __tablename__ = 'users'
+    __table_args__ = (
+        PrimaryKeyConstraint('id', name='users_pkey'),
+        UniqueConstraint('login', name='users_login_key')
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
+    login: Mapped[str] = mapped_column(String(255), nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String(60), nullable=False)
+    role: Mapped[str] = mapped_column(Enum(
+        'user', 'admin', name='user_role'), server_default=text("'user'::user_role"))
+
+    sessions: Mapped[list['Session']] = relationship(
+        'Session', back_populates='user')
 
 
 class BookAuthor(Base):
@@ -120,6 +139,25 @@ class Edition(Base):
         'EditionChapter', back_populates='edition')
     content_paragraphs: Mapped[list['ContentParagraph']] = relationship(
         'ContentParagraph', back_populates='edition')
+
+
+class Session(Base):
+    __tablename__ = 'sessions'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['user_id'],
+            ['users.id'],
+            name='sessions_user_id_fkey'),
+        PrimaryKeyConstraint('id', name='sessions_pkey')
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    created_time: Mapped[datetime.datetime] = mapped_column(
+        DateTime, server_default=text('now()'))
+
+    user: Mapped['User'] = relationship('User', back_populates='sessions')
 
 
 class EditionChapter(Base):

@@ -26,6 +26,8 @@ app.add_middleware(
 app.include_router(search_router)
 app.include_router(books_router)
 app.include_router(reader_router)
+app.include_router(auth_router)
+app.include_router(user_router)
 
 
 # ---------- health ----------
@@ -56,4 +58,5 @@ def health():
                       "reason": "sentence-transformers not installed"}
     except Exception as e:
         enc_ok = {"ok": False, "reason": str(e)}
-    return {"ok": True, "es": info.get("version", {}), "pg_ok": pg_ok, "encoder": enc_ok}
+    return {"ok": True, "es": info.get(
+        "version", {}), "pg_ok": pg_ok, "encoder": enc_ok}
