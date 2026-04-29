@@ -33,3 +33,20 @@ CREATE TABLE IF NOT EXISTS content_paragraphs (
 
 CREATE INDEX IF NOT EXISTS idx_paragraphs_chapter_block
 ON content_paragraphs (chapter_id, block_start, id);
+
+-- === Users ===
+
+CREATE TYPE user_role AS ENUM('user', 'admin');
+
+CREATE TABLE IF NOT EXISTS users (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    login           VARCHAR(255) NOT NULL UNIQUE,
+    hashed_password VARCHAR(60) NOT NULL,
+    role            user_role DEFAULT 'user' NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID REFERENCES users(id) NOT NULL,
+    created_time    TIMESTAMP DEFAULT now() NOT NULL
+);

@@ -9,10 +9,7 @@ from app.config import BOOKS_CONTENT_DIR
 from app.integrations.database import check_pg_connection, close_db_engine
 from app.integrations.elasticsearch import close_es_client, es_get
 from app.integrations.embed_model import _HAS_ST, get_encoder
-from app.routes.books import router as books_router
-from app.routes.reader import router as reader_router
-from app.routes.search import router as search_router
-
+from app.routes import *
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -45,6 +42,8 @@ app.add_middleware(
 app.include_router(search_router)
 app.include_router(books_router)
 app.include_router(reader_router)
+app.include_router(auth_router)
+app.include_router(user_router)
 
 
 def _check_encoder_sync():
