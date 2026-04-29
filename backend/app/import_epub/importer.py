@@ -1,5 +1,3 @@
-import hashlib
-import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -13,9 +11,10 @@ import torch
 from sentence_transformers import SentenceTransformer
 
 from .text_utils import (
-    html_to_paragraph_blocks,
+    html_to_indexed_blocks,
     coalesce_short_paragraphs,
     paragraph_windows,
+    build_window_content_and_offsets,
     tokenize_words,
 )
 from .epub_parse import parse_container_and_opf, parse_opf
@@ -23,15 +22,6 @@ from .es_support import ensure_es_indices, es_bulk_safe
 
 _ENCODER_CACHE: Dict[Tuple[str, str], Tuple[SentenceTransformer, Optional[int], str]] = {}
 _ES_DIM_ENSURED: Dict[Tuple[str, str, str, int], bool] = {}
-
-
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
 
 # ---------- Embedding helpers ----------
 
@@ -122,80 +112,63 @@ def parse_date(date_raw: str) -> Optional[str]:
     return None
 
 
-def upsert_author(cur, name: str) -> int:
-    cur.execute(
-        "INSERT INTO authors (name) VALUES (%s) "
-        "ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name "
-        "RETURNING id",
-        (name,),
-    )
-    return cur.fetchone()[0]
-
-
 def find_or_insert_book(cur, meta, subjects_list: List[str]) -> int:
-    for scheme, value in meta["identifiers"]:
-        cur.execute("SELECT book_id FROM book_identifiers WHERE scheme=%s AND value=%s", (scheme, value))
-        row = cur.fetchone()
-        if row:
-            return row[0]
+    authors = meta.get("creators") or None
+    pub_date = parse_date(meta.get("date_raw") or "")
+
     cur.execute(
         """
-        INSERT INTO books (title, sort_title, lang, description, publisher, pub_date, subjects, series, meta)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        RETURNING id
+        SELECT id FROM books
+        WHERE title = %s
+          AND authors IS NOT DISTINCT FROM %s
+          AND lang IS NOT DISTINCT FROM %s
+          AND publisher IS NOT DISTINCT FROM %s
+          AND pub_date IS NOT DISTINCT FROM %s
+        ORDER BY id
+        LIMIT 1
         """,
         (
-            meta["title"],
-            meta["title"],
-            meta["language"],
-            meta["description"],
-            meta["publisher"],
-            parse_date(meta["date_raw"]),
-            subjects_list if subjects_list else None,
-            None,
-            json.dumps({"identifiers": meta["identifiers"], "opf_path": meta["opf_path"]}, ensure_ascii=False),
+            meta.get("title"),
+            authors,
+            meta.get("language"),
+            meta.get("publisher"),
+            pub_date,
         ),
     )
-    book_id = cur.fetchone()[0]
-    for i, raw in enumerate(meta["creators"]):
-        aid = upsert_author(cur, raw)
-        cur.execute(
-            "INSERT INTO book_authors (book_id, author_id, role, ord) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            (book_id, aid, "author", i),
-        )
-    for scheme, value in meta["identifiers"]:
-        cur.execute(
-            "INSERT INTO book_identifiers (book_id, scheme, value) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
-            (book_id, scheme, value),
-        )
-    return book_id
-
-
-def insert_or_get_edition(
-    cur, book_id: int, storage_key: str, size_bytes: int, sha256: str, opf_path: str
-) -> Optional[int]:
-    cur.execute("SELECT id FROM editions WHERE sha256=%s", (sha256,))
     row = cur.fetchone()
     if row:
         return row[0]
+
     cur.execute(
         """
-        INSERT INTO editions (book_id, format, storage_key, size_bytes, sha256, drm, opf_path)
-        VALUES (%s,'EPUB',%s,%s,%s,false,%s)
+        INSERT INTO books (title, authors, lang, description, publisher, pub_date, subjects, series)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
         """,
-        (book_id, storage_key, size_bytes, sha256, opf_path),
+        (
+            meta.get("title"),
+            authors,
+            meta.get("language"),
+            meta.get("description"),
+            meta.get("publisher"),
+            pub_date,
+            subjects_list if subjects_list else None,
+            None,
+        ),
     )
     return cur.fetchone()[0]
 
 
-def insert_chapter(cur, edition_id: int, ord_: int, title: Optional[str], href: str) -> int:
+def insert_chapter(cur, book_id: int, ord_: int, title: Optional[str]) -> int:
     cur.execute(
         """
-        INSERT INTO edition_chapters (edition_id, ord, title, href)
-        VALUES (%s,%s,%s,%s) RETURNING id
+        INSERT INTO chapters (book_id, ord, title)
+        VALUES (%s,%s,%s)
+        ON CONFLICT (book_id, ord) DO UPDATE
+        SET title = COALESCE(EXCLUDED.title, chapters.title)
+        RETURNING id
         """,
-        (edition_id, ord_, title or None, href),
+        (book_id, ord_, title or None),
     )
     return cur.fetchone()[0]
 
@@ -203,41 +176,33 @@ def insert_chapter(cur, edition_id: int, ord_: int, title: Optional[str], href: 
 def insert_paragraph_meta(
     cur,
     book_id: int,
-    edition_id: int,
     chapter_id: Optional[int],
-    para_start: int,
-    para_end: int,
-    window_size: int,
+    block_start: int,
+    block_end: int,
     tokens_from: int,
     tokens_to: int,
-    es_index: str,
     es_doc_id: str,
     lang: Optional[str],
     para_type: Optional[str],
-    is_heading: Optional[bool],
 ):
     cur.execute(
         """
         INSERT INTO content_paragraphs
-          (book_id, edition_id, chapter_id, para_start, para_end, window_size,
-           tokens_from, tokens_to, es_index, es_doc_id, lang, para_type, is_heading)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+          (book_id, chapter_id, block_start, block_end,
+           tokens_from, tokens_to, es_doc_id, lang, para_type)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (es_doc_id) DO NOTHING
-    """,
+        """,
         (
             book_id,
-            edition_id,
             chapter_id,
-            para_start,
-            para_end,
-            window_size,
+            block_start,
+            block_end,
             tokens_from,
             tokens_to,
-            es_index,
             es_doc_id,
             lang,
             para_type,
-            is_heading,
         ),
     )
 
@@ -302,9 +267,6 @@ def process_epub(file_path: Path, args):
     conn = _connect_from_args(args)
 
     try:
-        size_bytes = file_path.stat().st_size
-        sha = sha256_file(file_path)
-
         idx_meta: str = args.es_index_meta
         idx_content: str = args.es_index_content
 
@@ -328,12 +290,8 @@ def process_epub(file_path: Path, args):
                 return "skipped"
 
             with conn.cursor() as cur:
-                # 2) книга + издание
+                # 2) книга
                 book_id = find_or_insert_book(cur, meta, meta["subjects"])
-                edition_id = insert_or_get_edition(cur, book_id, str(file_path), size_bytes, sha, meta["opf_path"])
-                if not edition_id:
-                    conn.commit()
-                    return "ok"
 
                 book_export_dir: Optional[Path] = None
                 if export_root is not None:
@@ -380,16 +338,19 @@ def process_epub(file_path: Path, args):
                     except Exception:
                         pass
 
-                    cid = insert_chapter(cur, edition_id, idx, chap_title, href)
+                    cid = insert_chapter(cur, book_id, idx, chap_title)
                     chapter_ids.append(cid)
 
                     if book_export_dir is not None and cid is not None:
                         chapter_file = book_export_dir / f"{cid}.xml"
                         try:
-                            with open(chapter_file, "wb") as f:
-                                f.write(raw)
+                            html = raw.decode("utf-8", errors="ignore")
+                            _blocks_for_markup, annotated_html = html_to_indexed_blocks(html)
+
+                            with open(chapter_file, "w", encoding="utf-8") as f:
+                                f.write(annotated_html)
                         except Exception as e:
-                            print(f"[WARN] cannot write chapter {cid} xml: {e}", file=sys.stderr)
+                            print(f"[WARN] cannot write annotated chapter {cid} xml: {e}", file=sys.stderr)
 
                 # 4) ES: метадок книги
                 book_title_for_es = _fallback_book_title(file_path, meta.get("title"))
@@ -443,32 +404,35 @@ def process_epub(file_path: Path, args):
                     html = raw.decode("utf-8", errors="ignore")
                     chapter_id = chapter_ids[c_idx - 1] if c_idx - 1 < len(chapter_ids) else None
 
-                    blocks = html_to_paragraph_blocks(html)
+                    blocks, _annotated_html = html_to_indexed_blocks(html)
+
                     if not args.no_join_short_paragraphs:
                         blocks = coalesce_short_paragraphs(blocks, args.min_paragraph_words)
 
-                    para_token_counts = [len(tokenize_words(txt)) for kind, txt in blocks]
+                    block_token_counts = [len(tokenize_words(block.text)) for block in blocks]
                     prefix = [0]
-                    for c in para_token_counts:
+                    for c in block_token_counts:
                         prefix.append(prefix[-1] + c)
 
                     wins = paragraph_windows(blocks, args.para_window_size, args.para_window_stride)
 
                     base_offset = words_running
-                    for (start, end, win_blocks) in wins:
-                        win_texts = [t for _, t in win_blocks]
-                        win_kinds = [k for k, _ in win_blocks]
-                        para_text = "\n\n".join(win_texts)
+
+                    for win_idx, (start, end, win_blocks) in enumerate(wins):
+                        para_text, block_offsets = build_window_content_and_offsets(win_blocks)
+
                         if not para_text.strip():
                             continue
 
-                        is_head = any(k == "heading" for k in win_kinds)
-                        kind_first = win_kinds[0] if win_kinds else "paragraph"
+                        kind_first = win_blocks[0].kind if win_blocks else "paragraph"
+
+                        block_start = win_blocks[0].block_start
+                        block_end = win_blocks[-1].block_end
 
                         w_from = base_offset + prefix[start]
                         w_to = base_offset + prefix[end + 1]
 
-                        base_doc_id = f"{edition_id}:{c_idx}:{start}"
+                        base_doc_id = f"{book_id}:{c_idx}:{win_idx}"
 
                         subtexts = [para_text]
                         if args.embed_model and args.embed_max_words > 0:
@@ -477,43 +441,41 @@ def process_epub(file_path: Path, args):
 
                         for k, chunk_text in enumerate(subtexts):
                             doc_id = base_doc_id if k == 0 and len(subtexts) == 1 else f"{base_doc_id}:{k}"
+
                             content_docs.append(
                                 {
                                     "_id": doc_id,
                                     "book_id": str(book_id),
-                                    "edition_id": str(edition_id),
+                                    "chapter_id": chapter_id,
                                     "chapter_ord": c_idx,
-                                    "chapter_href": href,
                                     "lang": meta["language"] or "",
                                     "title": book_title_for_es,
                                     "content": chunk_text,
                                     "length": len(chunk_text),
-                                    "para_start": start,
-                                    "para_end": end,
-                                    "window_size": end - start + 1,
-                                    "is_heading": is_head,
+
+                                    "block_start": block_start,
+                                    "block_end": block_end,
+                                    "block_offsets": block_offsets,
+
                                     "para_type": kind_first,
                                     "subchunk_idx": k if len(subtexts) > 1 else 0,
                                 }
                             )
+
                             if args.embed_model:
                                 texts_for_embed.append(chunk_text)
 
                         insert_paragraph_meta(
                             cur,
                             book_id,
-                            edition_id,
                             chapter_id,
-                            start,
-                            end,
-                            end - start + 1,
+                            block_start,
+                            block_end,
                             w_from,
                             w_to,
-                            idx_content,
                             base_doc_id,
                             meta["language"] or None,
                             para_type=kind_first,
-                            is_heading=is_head,
                         )
 
                     words_running += prefix[-1]

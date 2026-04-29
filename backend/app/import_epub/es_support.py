@@ -1,5 +1,5 @@
 import json
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import requests
 
@@ -112,11 +112,10 @@ def ensure_es_indices(
         return base
 
     def content_mappings():
-        props = {
+        props: dict[str, dict[str, Any]] = {
             "book_id": {"type": "keyword", "normalizer": "kw_lower"},
-            "edition_id": {"type": "keyword", "normalizer": "kw_lower"},
+            "chapter_id": {"type": "long"},
             "chapter_ord": {"type": "integer"},
-            "chapter_href": {"type": "keyword"},
             "lang": {"type": "keyword", "normalizer": "kw_lower"},
             "title": {
                 "type": "text",
@@ -137,13 +136,22 @@ def ensure_es_indices(
                 },
             },
             "length": {"type": "integer"},
-            "para_start": {"type": "integer"},
-            "para_end": {"type": "integer"},
-            "window_size": {"type": "integer"},
-            "is_heading": {"type": "boolean"},
+            "block_start": {"type": "integer"},
+            "block_end": {"type": "integer"},
+            "block_offsets": {
+                "type": "object",
+                "enabled": True,
+                "properties": {
+                    "block_index": {"type": "integer"},
+                    "start": {"type": "integer"},
+                    "end": {"type": "integer"},
+                },
+            },
+
             "para_type": {"type": "keyword"},
             "subchunk_idx": {"type": "integer"},
         }
+
         if dense_vec_dim and dense_vec_dim > 0:
             props["content_vec"] = {
                 "type": "dense_vector",
@@ -151,7 +159,12 @@ def ensure_es_indices(
                 "index": True,
                 "similarity": "cosine",
             }
-        return {"_source": {"enabled": store_source}, "dynamic": "false", "properties": props}
+
+        return {
+            "_source": {"enabled": store_source},
+            "dynamic": "false",
+            "properties": props,
+        }
 
     if use_templates:
         tmpl_meta = {

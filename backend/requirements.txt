@@ -8,6 +8,7 @@ python-dotenv>=1.0
 
 # Postgres + парсинг EPUB
 psycopg2-binary>=2.9
+asyncpg>=0.29 
 beautifulsoup4>=4.12
 lxml>=4.9
 tqdm>=4.66
