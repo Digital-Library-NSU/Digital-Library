@@ -1,0 +1,37 @@
+<div class="auth-container">
+    <form class="auth-card" [formGroup]="form" (ngSubmit)="submit()">
+        <h2>Регистрация</h2>
+
+        <label class="auth-field">
+            <span>Логин</span>
+            <input type="text" formControlName="login" autocomplete="username" [disabled]="isSubmitting">
+        </label>
+
+        <label class="auth-field">
+            <span>Пароль</span>
+            <input type="password" formControlName="password" autocomplete="new-password" [disabled]="isSubmitting">
+        </label>
+
+        <label class="auth-field">
+            <span>Повторите пароль</span>
+            <input type="password" formControlName="confirmPassword" autocomplete="new-password"
+                [disabled]="isSubmitting">
+        </label>
+
+        @if (form.errors?.['passwordsMismatch'] && form.get('confirmPassword')?.touched) {
+        <div class="error-alert">Пароли не совпадают.</div>
+        }
+
+        @if (errorMessage) {
+        <div class="error-alert">{{ errorMessage }}</div>
+        }
+
+        <button type="submit" class="auth-btn" [disabled]="form.invalid || isSubmitting">
+            @if (isSubmitting) { Создаём аккаунт... } @else { Зарегистрироваться }
+        </button>
+
+        <p class="auth-switch">
+            Уже есть аккаунт? <a routerLink="/login">Войти</a>
+        </p>
+    </form>
+</div>

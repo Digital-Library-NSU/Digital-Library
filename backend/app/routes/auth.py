@@ -29,7 +29,7 @@ def create_session(user_id: UUID, db_session) -> Response:
     res.set_cookie(
         'sessionid',
         session_id,
-        secure=True,
+        secure=False,
         httponly=True,
         expires=expiration_ts)
     return res
@@ -106,7 +106,7 @@ def logout(request: Request) -> Response:
     res.set_cookie(
         'sessionid',
         '',
-        secure=True,
+        secure=False,
         httponly=True,
         expires=datetime(1970, 1, 1, tzinfo=timezone.utc))
     return res

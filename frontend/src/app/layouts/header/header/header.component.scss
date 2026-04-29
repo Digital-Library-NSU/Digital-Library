@@ -31,5 +31,24 @@
     &__button {
         background-color: unset;
         border: none;
+        cursor: pointer;
+    }
+
+    &__button--text {
+        font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+        color: var(--primary-text-color);
+        text-decoration: none;
+        padding: 0 8px;
+        font-size: 1rem;
+
+        &:hover {
+            color: var(--primary-hover-color);
+        }
+    }
+
+    &__user-login {
+        font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+        color: var(--primary-text-color);
+        font-weight: bold;
     }
 }

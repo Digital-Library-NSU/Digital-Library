@@ -8,6 +8,7 @@ import { BookDetailsModalComponent } from './components/book-details-modal/book-
 import { UploadBookModalComponent } from './components/upload-book-modal/upload-book-modal.component';
 import { SearchWidgetComponent } from './components/search-widget/search-widget.component';
 import { SearchResultsComponent } from './components/search-results/search-results.component';
+import { AuthService } from '../../core/services/auth.service';
 
 @Component({
     selector: 'app-catalog',
@@ -24,6 +25,9 @@ import { SearchResultsComponent } from './components/search-results/search-resul
 })
 export class CatalogComponent {
     private bookService = inject(BookDataService);
+    private auth = inject(AuthService);
+
+    readonly isAdmin = this.auth.isAdmin;
 
     books: BookCard[] = [];
     isLoading = true;
