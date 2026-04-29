@@ -203,52 +203,66 @@ export class ReaderComponent implements OnInit {
 
     goToSearchResult(hit: InBookSearchHit) {
         const snippet = hit.snippet;
-        const targetIndex = snippet.chapter_ord - 2;
-        const targetChapter = this.chaptersList.chapters[targetIndex];
 
-        if (!targetChapter) {
-            console.error('Chapter not found for index', targetIndex);
+        const targetIndex = this.chaptersList.chapters.findIndex(
+            (chapter) => chapter.chapter_id === snippet.chapter_id
+        );
+
+        if (targetIndex === -1) {
+            console.error('Chapter not found for snippet', snippet);
             return;
         }
 
-        const paraIndex = (snippet.para_index_in_chapter ?? 0) + 1;
+        const blockIndex = snippet.hit_block_index ?? snippet.block_start;
+
+        if (blockIndex === null || blockIndex === undefined) {
+            console.error('Block index not found for snippet', snippet);
+            return;
+        }
 
         if (this.currentChapterIndex === targetIndex) {
-            this.scrollToParagraph(paraIndex);
+            this.scrollToBlock(blockIndex);
         } else {
             this.currentChapterIndex = targetIndex;
+            const targetChapter = this.chaptersList.chapters[targetIndex];
+
             this.loadChapter(targetChapter.chapter_id, false, () => {
-                this.scrollToParagraph(paraIndex);
+                this.scrollToBlock(blockIndex);
             });
         }
 
         this.isSearchOpen = false;
     }
 
-    private scrollToParagraph(paraIndex: number) {
+    private scrollToBlock(blockIndex: number) {
         setTimeout(() => {
             const container = this.bookContainer.nativeElement;
-            const paragraphs = container.querySelectorAll('p');
 
-            if (paragraphs[paraIndex]) {
-                const targetEl = paragraphs[paraIndex] as HTMLElement;
+            const targetEl = container.querySelector(
+                `[data-block-index="${blockIndex}"]`
+            ) as HTMLElement | null;
 
-                const elementOffset = targetEl.offsetLeft;
-
-                const pageWidth = container.clientWidth;
-                const stride = pageWidth + this.COLUMN_GAP;
-
-                const pageIndex = Math.floor(elementOffset / pageWidth);
-
-                container.scrollTo({
-                    left: pageIndex * stride,
-                    behavior: 'smooth',
-                });
-
-                // targetEl.style.backgroundColor = 'rgba(255, 235, 59, 0.5)';
-                // targetEl.style.transition = 'background-color 0.5s';
-                // setTimeout(() => (targetEl.style.backgroundColor = ''), 2000);
+            if (!targetEl) {
+                console.error('Target block not found', blockIndex);
+                return;
             }
+
+            const elementOffset = targetEl.offsetLeft;
+            const pageWidth = container.clientWidth;
+            const stride = pageWidth + this.COLUMN_GAP;
+
+            const pageIndex = Math.floor(elementOffset / stride);
+
+            container.scrollTo({
+                left: pageIndex * stride,
+                behavior: 'smooth',
+            });
+            
+            targetEl.classList.add('search-hit-highlight');
+
+            setTimeout(() => {
+                targetEl.classList.remove('search-hit-highlight');
+            }, 2500);
         }, 150);
     }
 

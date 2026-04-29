@@ -1,20 +1,29 @@
-from fastapi.routing import APIRouter
-from fastapi import HTTPException, Query
-from fastapi.responses import FileResponse
-from sqlalchemy import select
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
-import re
-import html as _html
+from fastapi import HTTPException, Query
+from fastapi.responses import FileResponse
+from fastapi.routing import APIRouter
+from sqlalchemy import select
 
 from app.config import BOOKS_CONTENT_DIR, IDX_CONTENT
-from app.dtos.reader_dtos import GetChaptersResponse, ChapterDto, InBookSearchResponseDTO, InBookSearchHitDTO
+from app.dtos.reader_dtos import (
+    GetChaptersResponse,
+    ChapterDto,
+    InBookSearchResponseDTO,
+    InBookSearchHitDTO,
+)
 from app.dtos.search_dtos import SnippetDTO
 from app.integrations.database import get_db_session
-from app.integrations.orm import EditionChapter, Edition
 from app.integrations.elasticsearch import es_post
+from app.integrations.orm import Book, Chapter
 from app.utils.paragraph_extras import fetch_paragraph_extras
+from app.utils.search_highlight import (
+    CONTENT_HIT_SOURCE,
+    canonical_highlight,
+    resolve_hit_block_index,
+    same_highlight,
+)
 
 router = APIRouter(prefix="/reader")
 
@@ -27,62 +36,44 @@ def _chapter_file_exists(book_id: int, chapter_id: int) -> bool:
     return (BOOKS_ROOT / str(book_id) / f"{chapter_id}.xml").exists()
 
 
-_TAG_RE = re.compile(r"<[^>]+>")
-_EM_RE = re.compile(r"(?is)<em>(.*?)</em>")
-_WS_RE = re.compile(r"\s+")
-
-
-def _canonical_highlight(html_snippet: str, max_len: int = 220) -> str:
-    if not html_snippet:
+def _chapter_path(book_id: int, chapter_id: int | None) -> str:
+    if chapter_id is None:
         return ""
 
-    s = _EM_RE.sub(r"@@\1@@", html_snippet)
-    s = _TAG_RE.sub(" ", s)
-    s = _html.unescape(s)
-    s = s.replace("\u00a0", " ").lower()
-    s = _WS_RE.sub(" ", s).strip()
+    if not _chapter_file_exists(book_id, chapter_id):
+        return ""
 
-    anchor = s.find("@@")
-    if anchor != -1:
-        s = s[anchor:]
-
-    s = s.replace("@@", "")
-
-    return s[:max_len].strip()
-
-
-def _same_highlight(a: str, b: str) -> bool:
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    if a.startswith(b) or b.startswith(a):
-        return True
-    if a in b or b in a:
-        return True
-    return False
+    return f"/books_content/{book_id}/{chapter_id}.xml"
 
 
 def _chapter_key(sn: SnippetDTO) -> str:
+    if sn.chapter_id is not None:
+        return f"id:{sn.chapter_id}"
     return sn.chapter_path or f"ord:{sn.chapter_ord}"
 
 
+async def _book_exists(book_id: int) -> bool:
+    async with get_db_session() as db:
+        result = await db.execute(select(Book.id).where(Book.id == book_id))
+        return result.scalar_one_or_none() is not None
+
+
 @router.get("/{book_id}/search", response_model=InBookSearchResponseDTO)
-def search_in_book(
+async def search_in_book(
     book_id: int,
     q: str = Query(..., description="Цитата/фраза для поиска внутри этой книги"),
     size: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     slop: int = Query(2, ge=0, le=20, description="slop для match_phrase"),
-    min_score: float = Query(0.0, ge=0.0, description="Порог релевантности ES (отсекает слабые совпадения)"),
+    min_score: float = Query(0.0, ge=0.0, description="Порог релевантности ES"),
     fuzzy_fallback: bool = Query(True, description="Если match_phrase не дал результатов — попробовать fuzzy match"),
 ):
-    with get_db_session() as db:
-        edition_id = db.execute(select(Edition.id).where(Edition.book_id == book_id)).scalar_one_or_none()
-        if edition_id is None:
-            raise HTTPException(404, "Not found!")
+    if not await _book_exists(book_id):
+        raise HTTPException(404, "Not found!")
 
-    content_filter: List[Dict[str, Any]] = [{"term": {"book_id": str(book_id)}}]
+    content_filter: List[Dict[str, Any]] = [
+        {"term": {"book_id": str(book_id)}}
+    ]
 
     phrase_query: Dict[str, Any] = {
         "match_phrase": {
@@ -106,15 +97,7 @@ def search_in_book(
         }
     }
 
-    base_source = [
-        "book_id",
-        "edition_id",
-        "chapter_ord",
-        "chapter_href",
-        "content",
-    ]
-
-    def _do_es_search(must_query: Dict[str, Any]) -> Dict[str, Any]:
+    async def _do_es_search(must_query: Dict[str, Any]) -> Dict[str, Any]:
         body: Dict[str, Any] = {
             "from": offset,
             "size": size,
@@ -124,7 +107,7 @@ def search_in_book(
                     "filter": content_filter,
                 }
             },
-            "_source": base_source,
+            "_source": CONTENT_HIT_SOURCE,
             "highlight": {
                 "type": "fvh",
                 "fields": {
@@ -136,29 +119,36 @@ def search_in_book(
                 },
             },
         }
+
         if min_score > 0:
             body["min_score"] = float(min_score)
-        return es_post(f"{IDX_CONTENT}/_search", body)
 
-    res = _do_es_search(phrase_query)
+        return await es_post(f"{IDX_CONTENT}/_search", body)
+
+    res = await _do_es_search(phrase_query)
     hits_raw = res.get("hits", {}).get("hits", [])
 
     if fuzzy_fallback and not hits_raw:
-        res = _do_es_search(fuzzy_query)
+        res = await _do_es_search(fuzzy_query)
         hits_raw = res.get("hits", {}).get("hits", [])
 
     doc_ids = [h.get("_id") for h in hits_raw if h.get("_id")]
-    para_extras = fetch_paragraph_extras(doc_ids)
-
+    para_extras = await fetch_paragraph_extras(doc_ids)
 
     hits_with_key: List[Tuple[InBookSearchHitDTO, str]] = []
 
     for h in hits_raw:
         src = h.get("_source", {}) or {}
         score = float(h.get("_score") or 0.0)
-
         doc_id = h.get("_id") or ""
+
         extra = para_extras.get(doc_id)
+
+        chapter_id = (
+            extra.chapter_id
+            if extra and extra.chapter_id is not None
+            else src.get("chapter_id")
+        )
 
         chapter_ord = (
             extra.chapter_ord
@@ -166,29 +156,31 @@ def search_in_book(
             else int(src.get("chapter_ord") or 0)
         )
 
-        chapter_path = ""
-        if extra and extra.chapter_id is not None and _chapter_file_exists(book_id, extra.chapter_id):
-            chapter_path = f"/books_content/{book_id}/{extra.chapter_id}.xml"
+        chapter_path = _chapter_path(book_id, int(chapter_id)) if chapter_id is not None else ""
 
         hl_list = h.get("highlight", {}).get("content", [])
         snippet_html = hl_list[0] if hl_list else ""
-        canon_hl = _canonical_highlight(snippet_html)
+        canon_hl = canonical_highlight(snippet_html)
 
         snippet = SnippetDTO(
             doc_id=doc_id,
-            edition_id=str(src.get("edition_id")),
+            chapter_id=int(chapter_id) if chapter_id is not None else None,
             chapter_ord=chapter_ord,
             chapter_path=chapter_path,
             chapter_title=extra.chapter_title if extra else None,
             snippet=snippet_html,
 
-            paragraph_id=extra.paragraph_id if extra else None,
-            para_start=extra.para_start if extra else None,
-            para_end=extra.para_end if extra else None,
-            para_index_in_chapter=extra.para_index_in_chapter if extra else None,
+            block_start=extra.block_start if extra else src.get("block_start"),
+            block_end=extra.block_end if extra else src.get("block_end"),
+            hit_block_index=resolve_hit_block_index(src, snippet_html),
         )
 
-        hits_with_key.append((InBookSearchHitDTO(score=score, snippet=snippet), canon_hl))
+        hits_with_key.append(
+            (
+                InBookSearchHitDTO(score=score, snippet=snippet),
+                canon_hl,
+            )
+        )
 
     hits_with_key.sort(key=lambda x: x[0].score, reverse=True)
 
@@ -197,12 +189,13 @@ def search_in_book(
 
     for hit, canon_hl in hits_with_key:
         sn = hit.snippet
-        if sn.para_start is None:
+
+        if sn.hit_block_index is None:
             kept.append((hit, canon_hl))
             continue
 
         ck = _chapter_key(sn)
-        start = int(sn.para_start)
+        start = int(sn.hit_block_index)
 
         chapter_map = best_by_chapter_start.get(ck)
         if chapter_map is None:
@@ -212,9 +205,9 @@ def search_in_book(
         left = chapter_map.get(start - 1)
         right = chapter_map.get(start + 1)
 
-        if left is not None and _same_highlight(canon_hl, left[1]):
+        if left is not None and same_highlight(canon_hl, left[1]):
             continue
-        if right is not None and _same_highlight(canon_hl, right[1]):
+        if right is not None and same_highlight(canon_hl, right[1]):
             continue
 
         chapter_map[start] = (hit, canon_hl)
@@ -225,27 +218,28 @@ def search_in_book(
     return InBookSearchResponseDTO(total=len(hits), hits=hits)
 
 
-
 @router.get("/{book_id}/chapters")
-def get_chapters(book_id: int) -> GetChaptersResponse:
-    with get_db_session() as db_session:
-        edition_id = db_session.execute(
-            select(Edition.id).where(Edition.book_id == book_id)
-        ).scalar_one_or_none()
+async def get_chapters(book_id: int) -> GetChaptersResponse:
+    async with get_db_session() as db_session:
+        exists_result = await db_session.execute(
+            select(Book.id).where(Book.id == book_id)
+        )
+        exists = exists_result.scalar_one_or_none()
 
-        if edition_id is None:
+        if exists is None:
             raise HTTPException(404, "Not found!")
 
         stmt = (
-            select(EditionChapter.id, EditionChapter.title)
-            .where(EditionChapter.edition_id == edition_id)
-            .order_by(EditionChapter.ord)
+            select(Chapter.id, Chapter.title)
+            .where(Chapter.book_id == book_id)
+            .order_by(Chapter.ord)
         )
 
-        result = db_session.execute(stmt).all()
+        result = await db_session.execute(stmt)
+
         chapters = [
             ChapterDto(chapter_id=chapter_id, title=title)
-            for chapter_id, title in result
+            for chapter_id, title in result.all()
         ]
 
         if chapters and (chapters[0].title or "").lower() == "cover":
@@ -255,11 +249,10 @@ def get_chapters(book_id: int) -> GetChaptersResponse:
 
 
 @router.get("/{book_id}/{chapter_id}")
-def get_chapter(book_id: int, chapter_id: int) -> FileResponse:
-    path = Path(BOOKS_CONTENT_DIR + f"/{book_id}/{chapter_id}.xml")
+async def get_chapter(book_id: int, chapter_id: int) -> FileResponse:
+    path = Path(BOOKS_CONTENT_DIR) / str(book_id) / f"{chapter_id}.xml"
+
     if not path.is_file():
         raise HTTPException(404, "Not found!")
+
     return FileResponse(path=path, media_type="application/xhtml+xml")
-
-
-

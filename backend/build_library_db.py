@@ -8,7 +8,7 @@ from typing import List, Optional
 import requests
 from tqdm import tqdm
 
-from app.import_epub.schema import ensure_database, connect, drop_schema, apply_schema
+from app.import_epub.schema import ensure_database, connect, drop_library_schema, apply_schema
 from app.import_epub.es_support import ensure_es_indices
 from app.import_epub.importer import process_epub
 
@@ -126,10 +126,8 @@ def main():
     conn = connect(args.dsn)
     try:
         if args.recreate_schema:
-            drop_schema(conn)
+            drop_library_schema(conn)
         apply_schema(conn)
-    except Exception:
-        pass
     finally:
         conn.close()
 

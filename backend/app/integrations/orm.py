@@ -2,8 +2,22 @@ from typing import Optional
 import datetime
 import uuid
 
-from sqlalchemy import ARRAY, BigInteger, Boolean, Date, DateTime, Enum, ForeignKeyConstraint, Index, Integer, PrimaryKeyConstraint, String, Text, UniqueConstraint, Uuid, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import (
+    ARRAY,
+    BigInteger,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    PrimaryKeyConstraint,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -11,134 +25,84 @@ class Base(DeclarativeBase):
     pass
 
 
-class Author(Base):
-    __tablename__ = 'authors'
-    __table_args__ = (
-        PrimaryKeyConstraint('id', name='authors_pkey'),
-        UniqueConstraint('name', name='authors_name_key')
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    sort_name: Mapped[Optional[str]] = mapped_column(Text)
-
-    book_authors: Mapped[list['BookAuthor']] = relationship(
-        'BookAuthor', back_populates='author')
-
-
 class Book(Base):
     __tablename__ = 'books'
     __table_args__ = (
         PrimaryKeyConstraint('id', name='books_pkey'),
-        Index('idx_books_subjects', 'subjects'),
-        Index('idx_books_title')
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
-    sort_title: Mapped[Optional[str]] = mapped_column(Text)
+    authors: Mapped[Optional[list[str]]] = mapped_column(ARRAY(Text()))
     lang: Mapped[Optional[str]] = mapped_column(Text)
     description: Mapped[Optional[str]] = mapped_column(Text)
     publisher: Mapped[Optional[str]] = mapped_column(Text)
     pub_date: Mapped[Optional[datetime.date]] = mapped_column(Date)
     subjects: Mapped[Optional[list[str]]] = mapped_column(ARRAY(Text()))
     series: Mapped[Optional[str]] = mapped_column(Text)
-    meta: Mapped[Optional[dict]] = mapped_column(JSONB)
 
-    book_authors: Mapped[list['BookAuthor']] = relationship(
-        'BookAuthor', back_populates='book')
-    book_identifiers: Mapped[list['BookIdentifier']] = relationship(
-        'BookIdentifier', back_populates='book')
-    editions: Mapped[list['Edition']] = relationship(
-        'Edition', back_populates='book')
+    chapters: Mapped[list['Chapter']] = relationship(
+        'Chapter',
+        back_populates='book',
+    )
     content_paragraphs: Mapped[list['ContentParagraph']] = relationship(
-        'ContentParagraph', back_populates='book')
+        'ContentParagraph',
+        back_populates='book',
+    )
 
 
 class User(Base):
     __tablename__ = 'users'
     __table_args__ = (
         PrimaryKeyConstraint('id', name='users_pkey'),
-        UniqueConstraint('login', name='users_login_key')
+        UniqueConstraint('login', name='users_login_key'),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
+        Uuid,
+        primary_key=True,
+        server_default=text('gen_random_uuid()'),
+    )
     login: Mapped[str] = mapped_column(String(255), nullable=False)
     hashed_password: Mapped[str] = mapped_column(String(60), nullable=False)
-    role: Mapped[str] = mapped_column(Enum(
-        'user', 'admin', name='user_role'), server_default=text("'user'::user_role"))
+    role: Mapped[str] = mapped_column(
+        Enum('user', 'admin', name='user_role'),
+        nullable=False,
+        server_default=text("'user'::user_role"),
+    )
 
     sessions: Mapped[list['Session']] = relationship(
-        'Session', back_populates='user')
-
-
-class BookAuthor(Base):
-    __tablename__ = 'book_authors'
-    __table_args__ = (
-        ForeignKeyConstraint(['author_id'], ['authors.id'],
-                             ondelete='CASCADE', name='book_authors_author_id_fkey'),
-        ForeignKeyConstraint(['book_id'], ['books.id'],
-                             ondelete='CASCADE', name='book_authors_book_id_fkey'),
-        PrimaryKeyConstraint('book_id', 'author_id', name='book_authors_pkey')
+        'Session',
+        back_populates='user',
     )
 
-    book_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    author_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    role: Mapped[Optional[str]] = mapped_column(Text)
-    ord: Mapped[Optional[int]] = mapped_column(Integer)
 
-    author: Mapped['Author'] = relationship(
-        'Author', back_populates='book_authors')
-    book: Mapped['Book'] = relationship('Book', back_populates='book_authors')
-
-
-class BookIdentifier(Base):
-    __tablename__ = 'book_identifiers'
+class Chapter(Base):
+    __tablename__ = 'chapters'
     __table_args__ = (
-        ForeignKeyConstraint(['book_id'], [
-                             'books.id'], ondelete='CASCADE', name='book_identifiers_book_id_fkey'),
-        PrimaryKeyConstraint('book_id', 'scheme', 'value',
-                             name='book_identifiers_pkey'),
-        UniqueConstraint('scheme', 'value',
-                         name='book_identifiers_scheme_value_key')
-    )
-
-    book_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    scheme: Mapped[str] = mapped_column(Text, primary_key=True)
-    value: Mapped[str] = mapped_column(Text, primary_key=True)
-
-    book: Mapped['Book'] = relationship(
-        'Book', back_populates='book_identifiers')
-
-
-class Edition(Base):
-    __tablename__ = 'editions'
-    __table_args__ = (
-        ForeignKeyConstraint(['book_id'], ['books.id'],
-                             ondelete='CASCADE', name='editions_book_id_fkey'),
-        PrimaryKeyConstraint('id', name='editions_pkey'),
-        UniqueConstraint('sha256', name='editions_sha256_key'),
-        Index('idx_editions_book', 'book_id')
+        ForeignKeyConstraint(
+            ['book_id'],
+            ['books.id'],
+            ondelete='CASCADE',
+            name='chapters_book_id_fkey',
+        ),
+        PrimaryKeyConstraint('id', name='chapters_pkey'),
+        UniqueConstraint('book_id', 'ord', name='chapters_book_id_ord_key'),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    format: Mapped[str] = mapped_column(Text, nullable=False)
-    storage_key: Mapped[str] = mapped_column(Text, nullable=False)
     book_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-    size_bytes: Mapped[Optional[int]] = mapped_column(BigInteger)
-    sha256: Mapped[Optional[str]] = mapped_column(Text)
-    drm: Mapped[Optional[bool]] = mapped_column(Boolean)
-    opf_path: Mapped[Optional[str]] = mapped_column(Text)
-    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(
-        DateTime(True), server_default=text('now()'))
+    ord: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[Optional[str]] = mapped_column(Text)
 
     book: Mapped[Optional['Book']] = relationship(
-        'Book', back_populates='editions')
-    edition_chapters: Mapped[list['EditionChapter']] = relationship(
-        'EditionChapter', back_populates='edition')
+        'Book',
+        back_populates='chapters',
+    )
     content_paragraphs: Mapped[list['ContentParagraph']] = relationship(
-        'ContentParagraph', back_populates='edition')
+        'ContentParagraph',
+        back_populates='chapter',
+    )
 
 
 class Session(Base):
@@ -147,72 +111,67 @@ class Session(Base):
         ForeignKeyConstraint(
             ['user_id'],
             ['users.id'],
-            name='sessions_user_id_fkey'),
-        PrimaryKeyConstraint('id', name='sessions_pkey')
+            name='sessions_user_id_fkey',
+        ),
+        PrimaryKeyConstraint('id', name='sessions_pkey'),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
+        Uuid,
+        primary_key=True,
+        server_default=text('gen_random_uuid()'),
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     created_time: Mapped[datetime.datetime] = mapped_column(
-        DateTime, server_default=text('now()'))
-
-    user: Mapped['User'] = relationship('User', back_populates='sessions')
-
-
-class EditionChapter(Base):
-    __tablename__ = 'edition_chapters'
-    __table_args__ = (
-        ForeignKeyConstraint(['edition_id'], [
-                             'editions.id'], ondelete='CASCADE', name='edition_chapters_edition_id_fkey'),
-        PrimaryKeyConstraint('id', name='edition_chapters_pkey'),
-        Index('idx_chapters_ed', 'edition_id', 'ord')
+        DateTime,
+        nullable=False,
+        server_default=text('now()'),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    ord: Mapped[int] = mapped_column(Integer, nullable=False)
-    edition_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-    title: Mapped[Optional[str]] = mapped_column(Text)
-    href: Mapped[Optional[str]] = mapped_column(Text)
-
-    edition: Mapped[Optional['Edition']] = relationship(
-        'Edition', back_populates='edition_chapters')
-    content_paragraphs: Mapped[list['ContentParagraph']] = relationship(
-        'ContentParagraph', back_populates='chapter')
+    user: Mapped['User'] = relationship(
+        'User',
+        back_populates='sessions',
+    )
 
 
 class ContentParagraph(Base):
     __tablename__ = 'content_paragraphs'
     __table_args__ = (
-        ForeignKeyConstraint(['book_id'], [
-                             'books.id'], ondelete='CASCADE', name='content_paragraphs_book_id_fkey'),
-        ForeignKeyConstraint(['chapter_id'], ['edition_chapters.id'],
-                             ondelete='SET NULL', name='content_paragraphs_chapter_id_fkey'),
-        ForeignKeyConstraint(['edition_id'], [
-                             'editions.id'], ondelete='CASCADE', name='content_paragraphs_edition_id_fkey'),
+        ForeignKeyConstraint(
+            ['book_id'],
+            ['books.id'],
+            ondelete='CASCADE',
+            name='content_paragraphs_book_id_fkey',
+        ),
+        ForeignKeyConstraint(
+            ['chapter_id'],
+            ['chapters.id'],
+            ondelete='SET NULL',
+            name='content_paragraphs_chapter_id_fkey',
+        ),
         PrimaryKeyConstraint('id', name='content_paragraphs_pkey'),
         UniqueConstraint('es_doc_id', name='content_paragraphs_es_doc_id_key'),
-        Index('idx_paragraphs_book_start', 'book_id', 'para_start')
+        Index('idx_paragraphs_chapter_block', 'chapter_id', 'block_start', 'id'),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    para_start: Mapped[int] = mapped_column(Integer, nullable=False)
-    para_end: Mapped[int] = mapped_column(Integer, nullable=False)
-    window_size: Mapped[int] = mapped_column(Integer, nullable=False)
     book_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-    edition_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     chapter_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+    block_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    block_end: Mapped[int] = mapped_column(Integer, nullable=False)
+
     tokens_from: Mapped[Optional[int]] = mapped_column(Integer)
     tokens_to: Mapped[Optional[int]] = mapped_column(Integer)
-    es_index: Mapped[Optional[str]] = mapped_column(Text)
     es_doc_id: Mapped[Optional[str]] = mapped_column(Text)
     lang: Mapped[Optional[str]] = mapped_column(Text)
     para_type: Mapped[Optional[str]] = mapped_column(Text)
-    is_heading: Mapped[Optional[bool]] = mapped_column(Boolean)
 
     book: Mapped[Optional['Book']] = relationship(
-        'Book', back_populates='content_paragraphs')
-    chapter: Mapped[Optional['EditionChapter']] = relationship(
-        'EditionChapter', back_populates='content_paragraphs')
-    edition: Mapped[Optional['Edition']] = relationship(
-        'Edition', back_populates='content_paragraphs')
+        'Book',
+        back_populates='content_paragraphs',
+    )
+    chapter: Mapped[Optional['Chapter']] = relationship(
+        'Chapter',
+        back_populates='content_paragraphs',
+    )

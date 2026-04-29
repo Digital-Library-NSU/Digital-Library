@@ -7,18 +7,16 @@ from app.dtos.books_dtos import BookCardDto
 
 class SnippetDTO(BaseModel):
     doc_id: str
-    edition_id: str
+    chapter_id: Optional[int] = None
     chapter_ord: int
     chapter_path: str
     chapter_title: Optional[str] = None
     snippet: str
 
-    # locator fields for paragraph
-    paragraph_id: Optional[int] = None
-    para_start: Optional[int] = None
-    para_end: Optional[int] = None
+    block_start: Optional[int] = None
+    block_end: Optional[int] = None
 
-    para_index_in_chapter: Optional[int] = None
+    hit_block_index: Optional[int] = None
 
 
 class FullTextHitDTO(BaseModel):
