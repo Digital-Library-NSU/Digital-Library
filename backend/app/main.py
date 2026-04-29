@@ -3,9 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
-from app.config import BOOKS_CONTENT_DIR
 from app.integrations.database import check_pg_connection, close_db_engine
 from app.integrations.elasticsearch import close_es_client, es_get
 from app.integrations.embed_model import _HAS_ST, get_encoder
@@ -23,12 +21,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-
-app.mount(
-    "/books_content",
-    StaticFiles(directory=BOOKS_CONTENT_DIR),
-    name="books_content",
-)
 
 app.add_middleware(
     CORSMiddleware,

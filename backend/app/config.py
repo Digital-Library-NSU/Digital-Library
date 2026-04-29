@@ -21,4 +21,17 @@ EMBED_NORMALIZE = (os.getenv("EMBED_NORMALIZE", "true").lower() in {
 EMBED_ADD_QUERY_PREFIX = (os.getenv(
     "EMBED_ADD_QUERY_PREFIX", "true").lower() in {"1", "true", "yes", "on"})
 
-BOOKS_CONTENT_DIR = os.getenv("BOOKS_CONTENT_DIR", "books_content")
+# MinIO / S3-compatible storage.
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "library-content")
+MINIO_REGION = os.getenv("MINIO_REGION", "us-east-1")
+
+# Celery + Redis.
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
+
+# сюда API временно сохраняет загруженные EPUB,
+# а Celery worker потом их забирает.
+UPLOAD_TMP_DIR = os.getenv("UPLOAD_TMP_DIR", "/tmp/library_uploads")
