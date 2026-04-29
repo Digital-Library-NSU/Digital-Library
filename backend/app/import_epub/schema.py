@@ -9,6 +9,22 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = BACKEND_DIR / "schema.sql"
 
 
+LIBRARY_TABLES = (
+    "content_paragraphs",
+    "chapters",
+    "books",
+)
+
+LEGACY_LIBRARY_TABLES = (
+    "book_authors",
+    "authors",
+    "book_identifiers",
+    "book_identifier",
+    "edition_chapters",
+    "editions",
+)
+
+
 def load_schema_sql() -> str:
     try:
         return SCHEMA_PATH.read_text(encoding="utf-8")
@@ -17,6 +33,7 @@ def load_schema_sql() -> str:
 
 
 SCHEMA_SQL = load_schema_sql()
+
 
 def parse_dsn_dbname(dsn: str) -> Optional[str]:
     try:
@@ -38,19 +55,38 @@ def ensure_database(dsn: str):
     if not dbname:
         print("[WARN] Не удалось распарсить имя БД из DSN; пропускаю создание.", file=sys.stderr)
         return
+
     p = urlparse(dsn)
     admin_dsn = dsn.replace(p.path, "/postgres")
+
     with psycopg2.connect(admin_dsn) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM pg_database WHERE datname=%s", (dbname,))
             if cur.fetchone():
                 return
+
             print(f"[INFO] Создаю базу {dbname}")
             cur.execute(f'CREATE DATABASE "{dbname}"')
 
 
 def drop_schema(conn):
+    drop_library_schema(conn)
+
+
+def drop_library_schema(conn):
+    tables_to_drop = (*LIBRARY_TABLES, *LEGACY_LIBRARY_TABLES)
+
+    with conn.cursor() as cur:
+        for table_name in tables_to_drop:
+            cur.execute(f'DROP TABLE IF EXISTS "{table_name}" CASCADE;')
+
+    conn.commit()
+
+
+def drop_all_public_schema(conn):
+    # оставляем отдельную опасную функцию только для полного dev reset.
+    # В build_library_db.py её не вызываем.
     with conn.cursor() as cur:
         cur.execute("""
         DO $$ DECLARE r RECORD;
@@ -61,6 +97,14 @@ def drop_schema(conn):
           FOR r IN (SELECT schemaname, tablename FROM pg_tables WHERE schemaname='public') LOOP
             EXECUTE 'DROP TABLE IF EXISTS '||quote_ident(r.schemaname)||'.'||quote_ident(r.tablename)||' CASCADE';
           END LOOP;
+          FOR r IN (
+            SELECT typname
+            FROM pg_type
+            WHERE typnamespace = 'public'::regnamespace
+              AND typtype = 'e'
+          ) LOOP
+            EXECUTE 'DROP TYPE IF EXISTS public.'||quote_ident(r.typname)||' CASCADE';
+          END LOOP;
         END $$;
         """)
     conn.commit()
@@ -68,6 +112,8 @@ def drop_schema(conn):
 
 def apply_schema(conn, schema_sql: Optional[str] = None):
     sql = schema_sql or SCHEMA_SQL
+
     with conn.cursor() as cur:
         cur.execute(sql)
+
     conn.commit()

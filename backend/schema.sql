@@ -1,3 +1,5 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE TABLE IF NOT EXISTS books (
   id          BIGSERIAL PRIMARY KEY,
   title       TEXT NOT NULL,
@@ -34,9 +36,14 @@ CREATE TABLE IF NOT EXISTS content_paragraphs (
 CREATE INDEX IF NOT EXISTS idx_paragraphs_chapter_block
 ON content_paragraphs (chapter_id, block_start, id);
 
--- === Users ===
+-- === Users/Auth ===
 
-CREATE TYPE user_role AS ENUM('user', 'admin');
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_role') THEN
+        CREATE TYPE user_role AS ENUM('user', 'admin');
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS users (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
