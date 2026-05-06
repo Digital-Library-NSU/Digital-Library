@@ -1,22 +1,26 @@
+import asyncio
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from app.config import PG_DSN
-from app.integrations.database import get_pg
-from app.integrations.elasticsearch import es_get
 
+from app.integrations.database import check_pg_connection, close_db_engine
+from app.integrations.elasticsearch import close_es_client, es_get
 from app.integrations.embed_model import _HAS_ST, get_encoder
 from app.routes import *
 
-from fastapi.staticfiles import StaticFiles
-from app.config import BOOKS_CONTENT_DIR
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
 
-app = FastAPI()
+    await asyncio.gather(
+        close_es_client(),
+        close_db_engine(),
+    )
 
-app.mount(
-    "/books_content",
-    StaticFiles(directory=BOOKS_CONTENT_DIR),
-    name="books_content",
-)
+
+app = FastAPI(lifespan=lifespan)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,6 +30,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 app.include_router(search_router)
 app.include_router(books_router)
 app.include_router(reader_router)
@@ -33,33 +38,33 @@ app.include_router(auth_router)
 app.include_router(user_router)
 
 
-# ---------- health ----------
-@app.get("/health")
-def health():
-    info = {}
-    try:
-        info = es_get("")
-    except Exception as e:
-        raise HTTPException(503, f"ES not reachable: {e}")
-    pg_ok = None
-    if PG_DSN:
-        try:
-            conn = get_pg()
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                cur.fetchone()
-            pg_ok = True
-        except Exception:
-            pg_ok = False
-    enc_ok = None
+def _check_encoder_sync():
     try:
         if _HAS_ST:
             enc, dim, dev = get_encoder()
-            enc_ok = {"ok": True, "dim": dim, "device": dev}
-        else:
-            enc_ok = {"ok": False,
-                      "reason": "sentence-transformers not installed"}
+            return {"ok": True, "dim": dim, "device": dev}
+
+        return {"ok": False, "reason": "sentence-transformers not installed"}
+
     except Exception as e:
-        enc_ok = {"ok": False, "reason": str(e)}
-    return {"ok": True, "es": info.get(
-        "version", {}), "pg_ok": pg_ok, "encoder": enc_ok}
+        return {"ok": False, "reason": str(e)}
+
+
+@app.get("/health")
+async def health():
+    try:
+        info = await es_get("")
+    except Exception as e:
+        raise HTTPException(503, f"ES not reachable: {e}")
+
+    pg_ok, enc_ok = await asyncio.gather(
+        check_pg_connection(),
+        asyncio.to_thread(_check_encoder_sync),
+    )
+
+    return {
+        "ok": True,
+        "es": info.get("version", {}),
+        "pg_ok": pg_ok,
+        "encoder": enc_ok,
+    }

@@ -77,14 +77,47 @@ curl -XDELETE http://localhost:9200/_index_template/books_content_templateooks_c
 ```
 а потом уже запускать скрипт
 
-## 5) Импорт EPUB в БД + ES
+## 5) Minio
+первый запуск
+```bash
+docker run -d \
+  --name library-minio \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  -e MINIO_ROOT_USER=minioadmin \
+  -e MINIO_ROOT_PASSWORD=minioadmin \
+  -v "$PWD/minio_data:/data" \
+  minio/minio server /data --console-address ":9001"
+```
+MinIO console:
+http://localhost:9001
+
+Логин/пароль:
+minioadmin
+minioadmin
+
+```bash
+docker start library-minio
+```
+
+## 6) Redis
+первый запуск
+```bash
+docker run -d \
+  --name library-redis \
+  -p 6379:6379 \
+  redis:7
+```
+
+```bash
+docker start library-redis
+```
+
+## 7) Импорт EPUB в БД + ES
 ```
 pip install -r requirements.txt
 ```
-Если есть CUDA
-```
-pip install -r requirements.txt --index-url https://download.pytorch.org/whl/cu121
-```
+
 Скачтать модель(получилось только так)
 ```
 pip install -U huggingface_hub
@@ -101,12 +134,12 @@ PY
 python build_library_db.py \
   --create-db --recreate-schema \
   --root  <ВАШ_ПУТЬ_К_EPUB_ПАПКЕ> \
-  --recreate-es \
+  --recreate-es \ не удалит таблицы аутентификации
   --es-use-templates \
   --workers <если нужен параллелизм, по дефолту 1> \
   --limit 5 #на cpu даже 5 первых книг будут векторизоваться долго
 ```
-## 6) Как открыть базу в DBeaver
+## 8) Как открыть базу в DBeaver
 1. Database → New Database Connection → PostgreSQL
 2. Параметры:
    * Host: localhost
@@ -117,9 +150,14 @@ python build_library_db.py \
    * SSL: Disabled
 3. Test Connection → Finish.   
 
-## 7) Запуск бекенда и примеры запросов 
+## 9) Запуск бекенда и примеры запросов 
 ```
 uvicorn app.main:app --reload #из папки backend
+```
+
+Celery
+```
+celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=1
 ```
 
 Проверка:
