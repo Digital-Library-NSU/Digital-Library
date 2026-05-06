@@ -52,7 +52,7 @@ def _make_session_response(session_id: str) -> Response:
 
     res.set_cookie(
         'sessionid',
-        '',
+        session_id,
         secure=False,
         httponly=True,
         expires=expiration_ts,
@@ -147,7 +147,7 @@ async def logout(request: Request) -> Response:
     res.set_cookie(
         "sessionid",
         "",
-        secure=True,
+        secure=False,
         httponly=True,
         expires=datetime(1970, 1, 1, tzinfo=timezone.utc),
     )
