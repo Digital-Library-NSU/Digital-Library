@@ -18,4 +18,5 @@ integrations/models/**
 *.safetensors
 *.pt
 tokenizer.json
-
+models/
+books_content/

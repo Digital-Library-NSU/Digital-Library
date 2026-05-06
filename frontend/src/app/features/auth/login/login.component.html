@@ -1,0 +1,28 @@
+<div class="auth-container">
+    <form class="auth-card" [formGroup]="form" (ngSubmit)="submit()">
+        <h2>Вход</h2>
+
+        <label class="auth-field">
+            <span>Логин</span>
+            <input type="text" formControlName="login" autocomplete="username" [disabled]="isSubmitting">
+        </label>
+
+        <label class="auth-field">
+            <span>Пароль</span>
+            <input type="password" formControlName="password" autocomplete="current-password"
+                [disabled]="isSubmitting">
+        </label>
+
+        @if (errorMessage) {
+        <div class="error-alert">{{ errorMessage }}</div>
+        }
+
+        <button type="submit" class="auth-btn" [disabled]="form.invalid || isSubmitting">
+            @if (isSubmitting) { Входим... } @else { Войти }
+        </button>
+
+        <p class="auth-switch">
+            Нет аккаунта? <a routerLink="/register">Зарегистрироваться</a>
+        </p>
+    </form>
+</div>

@@ -1,0 +1,106 @@
+.auth-container {
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 2rem;
+    background-color: var(--light-color);
+}
+
+.auth-card {
+    width: 100%;
+    max-width: 420px;
+    background: white;
+    padding: 2rem;
+    border-radius: 12px;
+    box-shadow: 0 1px 20px #cabdb4;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+
+    h2 {
+        margin: 0 0 0.5rem;
+        text-align: center;
+        font-family: "EirikRaude", "Courier New", Courier, monospace;
+        color: var(--primary-text-color);
+        letter-spacing: 2px;
+    }
+}
+
+.auth-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+
+    span {
+        font-size: 0.9rem;
+        color: #4a5568;
+    }
+
+    input {
+        padding: 10px 12px;
+        border: 1px solid #cbd5e0;
+        border-radius: 6px;
+        font-size: 1rem;
+        font-family: inherit;
+        transition: border-color 0.2s;
+
+        &:focus {
+            outline: none;
+            border-color: var(--primary-text-color);
+        }
+
+        &:disabled {
+            background-color: #f7fafc;
+            cursor: not-allowed;
+        }
+    }
+}
+
+.auth-btn {
+    background-color: var(--primary-text-color);
+    color: white;
+    border: none;
+    padding: 12px 24px;
+    border-radius: 6px;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: background-color 0.2s;
+
+    &:disabled {
+        background-color: #95a5a6;
+        cursor: not-allowed;
+    }
+
+    &:hover:not(:disabled) {
+        background-color: var(--primary-hover-color);
+    }
+}
+
+.auth-switch {
+    text-align: center;
+    font-size: 0.9rem;
+    color: #4a5568;
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+    margin: 0;
+
+    a {
+        color: var(--primary-text-color);
+        text-decoration: none;
+        font-weight: bold;
+
+        &:hover {
+            text-decoration: underline;
+        }
+    }
+}
+
+.error-alert {
+    color: #c0392b;
+    background: #fadbd8;
+    padding: 10px;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+}
