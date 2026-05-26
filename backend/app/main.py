@@ -36,7 +36,7 @@ app.include_router(books_router)
 app.include_router(reader_router)
 app.include_router(auth_router)
 app.include_router(user_router)
-
+app.include_router(review_router)
 
 def _check_encoder_sync():
     try:

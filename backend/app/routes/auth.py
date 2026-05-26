@@ -76,6 +76,23 @@ async def create_session(user_id: UUID, db_session) -> Response:
     return _make_session_response(session_id)
 
 
+async def get_current_user(request: Request) -> User:
+    session_id = _get_session_id_from_request(request)
+
+    async with get_db_session() as db_session:
+        session = await db_session.get(Session, session_id)
+
+        if session is None:
+            raise HTTPException(401, "Invalid session!")
+
+        user = await db_session.get(User, session.user_id)
+
+        if user is None:
+            raise HTTPException(401, "User not found!")
+
+        return user
+
+
 @router.post("/register")
 async def register(dto: AuthDTO) -> Response:
     if len(dto.login) > 255:

@@ -57,3 +57,18 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_id         UUID REFERENCES users(id) NOT NULL,
     created_time    TIMESTAMP DEFAULT now() NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS reviews (
+    id              BIGSERIAL PRIMARY KEY,
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    book_id         BIGINT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    rating          INT NOT NULL CHECK (rating BETWEEN 1 AND 10),
+    review_text     TEXT NOT NULL,
+    created_at      TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMP NOT NULL DEFAULT now(),
+    UNIQUE (user_id, book_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reviews_book_id ON reviews(book_id);
+
+CREATE INDEX IF NOT EXISTS idx_reviews_user_id ON reviews(user_id);

@@ -5,6 +5,7 @@ import uuid
 from sqlalchemy import (
     ARRAY,
     BigInteger,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
@@ -45,6 +46,10 @@ class Book(Base):
         'Chapter',
         back_populates='book',
     )
+    reviews: Mapped[list['Review']] = relationship(
+        'Review',
+        back_populates='book',
+    )
     content_paragraphs: Mapped[list['ContentParagraph']] = relationship(
         'ContentParagraph',
         back_populates='book',
@@ -71,6 +76,10 @@ class User(Base):
         server_default=text("'user'::user_role"),
     )
 
+    reviews: Mapped[list['Review']] = relationship(
+        'Review',
+        back_populates='user',
+    )
     sessions: Mapped[list['Session']] = relationship(
         'Session',
         back_populates='user',
@@ -103,6 +112,30 @@ class Chapter(Base):
         'ContentParagraph',
         back_populates='chapter',
     )
+
+
+class Review(Base):
+    __tablename__ = 'reviews'
+    __table_args__ = (
+        CheckConstraint('rating >= 1 AND rating <= 10', name='reviews_rating_check'),
+        ForeignKeyConstraint(['book_id'], ['books.id'], ondelete='CASCADE', name='reviews_book_id_fkey'),
+        ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE', name='reviews_user_id_fkey'),
+        PrimaryKeyConstraint('id', name='reviews_pkey'),
+        UniqueConstraint('user_id', 'book_id', name='reviews_user_id_book_id_key'),
+        Index('idx_reviews_book_id', 'book_id'),
+        Index('idx_reviews_user_id', 'user_id')
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    book_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)
+    review_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False, server_default=text('now()'))
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False, server_default=text('now()'))
+
+    book: Mapped['Book'] = relationship('Book', back_populates='reviews')
+    user: Mapped['User'] = relationship('User', back_populates='reviews')
 
 
 class Session(Base):
