@@ -4,18 +4,18 @@ from sqlalchemy.orm import selectinload
 
 from app.dtos.review import CreateReviewDTO, ReviewDTO
 from app.integrations.database import get_db_session
-from app.integrations.orm import Book, Review, User
+from app.integrations.orm import Book, Review
 from app.routes.auth import get_current_user
 
 router = APIRouter(prefix="/books")
 
 
 @router.post("/{book_id}/review")
-async def create_or_update_review(
+async def create_review(
     book_id: int,
     dto: CreateReviewDTO,
     request: Request,
-):
+) -> ReviewDTO:
     user = await get_current_user(request)
 
     async with get_db_session() as db_session:
@@ -33,22 +33,28 @@ async def create_or_update_review(
 
         existing_review = result.scalar_one_or_none()
 
-        if existing_review is None:
-            review = Review()
+        if existing_review is not None:
+            raise HTTPException(409, "Review already exists!")
 
-            review.user_id = user.id
-            review.book_id = book_id
-            review.rating = dto.rating
-            review.review_text = dto.text
+        review = Review()
 
-            db_session.add(review)
-        else:
-            existing_review.rating = dto.rating
-            existing_review.review_text = dto.text
+        review.user_id = user.id
+        review.book_id = book_id
+        review.rating = dto.rating
+        review.review_text = dto.text
+
+        db_session.add(review)
 
         await db_session.commit()
+        await db_session.refresh(review)
 
-    return {"ok": True}
+        return ReviewDTO(
+            id=review.id,
+            user_login=user.login,
+            rating=review.rating,
+            text=review.review_text,
+            created_at=review.created_at,
+        )
 
 
 @router.get("/{book_id}/reviews")
@@ -65,6 +71,7 @@ async def get_book_reviews(
             select(Review)
             .options(selectinload(Review.user))
             .where(Review.book_id == book_id)
+            .order_by(Review.created_at.desc())
         )
 
         reviews = result.scalars().all()
