@@ -30,50 +30,40 @@ class Book(Base):
     series: Mapped[Optional[str]] = mapped_column(Text)
 
     chapters: Mapped[list['Chapter']] = relationship(
-        'Chapter',
-        back_populates='book',
-    )
+        'Chapter', back_populates='book')
     reviews: Mapped[list['Review']] = relationship(
-        'Review',
-        back_populates='book',
-    )
+        'Review', back_populates='book')
+    bookmarks: Mapped[list['Bookmark']] = relationship(
+        'Bookmark', back_populates='book')
     content_paragraphs: Mapped[list['ContentParagraph']] = relationship(
-        'ContentParagraph',
-        back_populates='book',
-    )
-    bookmarks: Mapped[list['Bookmark']] = relationship('Bookmark', back_populates='book')
+        'ContentParagraph', back_populates='book')
 
 
 class User(Base):
     __tablename__ = 'users'
     __table_args__ = (
         PrimaryKeyConstraint('id', name='users_pkey'),
-        UniqueConstraint('login', name='users_login_key'),
+        UniqueConstraint('login', name='users_login_key')
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        Uuid,
-        primary_key=True,
-    bookmarks: Mapped[list['Bookmark']] = relationship(
-        'Bookmark', back_populates='book')
-    )
+        Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
     login: Mapped[str] = mapped_column(String(255), nullable=False)
     hashed_password: Mapped[str] = mapped_column(String(60), nullable=False)
     role: Mapped[str] = mapped_column(
-        Enum('user', 'admin', name='user_role'),
+        Enum(
+            'user',
+            'admin',
+            name='user_role'),
         nullable=False,
-        server_default=text("'user'::user_role"),
-    )
+        server_default=text("'user'::user_role"))
 
     reviews: Mapped[list['Review']] = relationship(
-        'Review',
-        back_populates='user',
-    )
+        'Review', back_populates='user')
     sessions: Mapped[list['Session']] = relationship(
-        'Session',
-        back_populates='user',
-    )
-    bookmarks: Mapped[list['Bookmark']] = relationship('Bookmark', back_populates='owner')
+        'Session', back_populates='user')
+    bookmarks: Mapped[list['Bookmark']] = relationship(
+        'Bookmark', back_populates='owner')
 
 
 class Chapter(Base):
@@ -83,46 +73,27 @@ class Chapter(Base):
             ['book_id'],
             ['books.id'],
             ondelete='CASCADE',
-            name='chapters_book_id_fkey',
-        ),
+            name='chapters_book_id_fkey'),
         PrimaryKeyConstraint('id', name='chapters_pkey'),
-    bookmarks: Mapped[list['Bookmark']] = relationship(
-        'Bookmark', back_populates='owner')
+        UniqueConstraint('book_id', 'ord', name='chapters_book_id_ord_key')
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    book_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     ord: Mapped[int] = mapped_column(Integer, nullable=False)
+    book_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     title: Mapped[Optional[str]] = mapped_column(Text)
 
     book: Mapped[Optional['Book']] = relationship(
-        'Book',
-        back_populates='chapters',
-    )
+        'Book', back_populates='chapters')
+    bookmarks: Mapped[list['Bookmark']] = relationship(
+        'Bookmark', back_populates='chapter')
     content_paragraphs: Mapped[list['ContentParagraph']] = relationship(
-        'ContentParagraph',
-        back_populates='chapter',
-    )
-    bookmarks: Mapped[list['Bookmark']] = relationship('Bookmark', back_populates='chapter')
+        'ContentParagraph', back_populates='chapter')
 
 
 class Review(Base):
     __tablename__ = 'reviews'
     __table_args__ = (
-        CheckConstraint('rating >= 1 AND rating <= 10', name='reviews_rating_check'),
-        ForeignKeyConstraint(['book_id'], ['books.id'], ondelete='CASCADE', name='reviews_book_id_fkey'),
-        ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE', name='reviews_user_id_fkey'),
-        PrimaryKeyConstraint('id', name='reviews_pkey'),
-        UniqueConstraint('user_id', 'book_id', name='reviews_user_id_book_id_key'),
-        Index('idx_reviews_book_id', 'book_id'),
-        Index('idx_reviews_user_id', 'user_id')
-    bookmarks: Mapped[list['Bookmark']] = relationship(
-        'Bookmark', back_populates='chapter')
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
-    book_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    rating: Mapped[int] = mapped_column(Integer, nullable=False)
         CheckConstraint(
             'rating >= 1 AND rating <= 10',
             name='reviews_rating_check'),
@@ -136,11 +107,26 @@ class Review(Base):
             ['users.id'],
             ondelete='CASCADE',
             name='reviews_user_id_fkey'),
-
+        PrimaryKeyConstraint('id', name='reviews_pkey'),
         UniqueConstraint(
             'user_id',
             'book_id',
             name='reviews_user_id_book_id_key'),
+        Index('idx_reviews_book_id', 'book_id'),
+        Index('idx_reviews_user_id', 'user_id')
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    book_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)
+    review_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, server_default=text('now()'))
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, server_default=text('now()'))
+
+    book: Mapped['Book'] = relationship('Book', back_populates='reviews')
     user: Mapped['User'] = relationship('User', back_populates='reviews')
 
 
@@ -150,47 +136,22 @@ class Session(Base):
         ForeignKeyConstraint(
             ['user_id'],
             ['users.id'],
-    created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, server_default=text('now()'))
-    updated_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, server_default=text('now()'))
-        PrimaryKeyConstraint('id', name='sessions_pkey'),
+            name='sessions_user_id_fkey'),
+        PrimaryKeyConstraint('id', name='sessions_pkey')
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        Uuid,
-        primary_key=True,
-        server_default=text('gen_random_uuid()'),
-    )
+        Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     created_time: Mapped[datetime.datetime] = mapped_column(
-        DateTime,
-        nullable=False,
-        server_default=text('now()'),
-    )
+        DateTime, nullable=False, server_default=text('now()'))
 
-    user: Mapped['User'] = relationship(
-        'User',
-        back_populates='sessions',
-    )
+    user: Mapped['User'] = relationship('User', back_populates='sessions')
 
 
 class Bookmark(Base):
     __tablename__ = 'bookmarks'
     __table_args__ = (
-        ForeignKeyConstraint(['book_id'], ['books.id'], name='bookmarks_book_id_fkey'),
-        ForeignKeyConstraint(['chapter_id'], ['chapters.id'], name='bookmarks_chapter_id_fkey'),
-        ForeignKeyConstraint(['owner_id'], ['users.id'], name='bookmarks_owner_id_fkey'),
-        PrimaryKeyConstraint('id', name='bookmarks_pkey')
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
-    owner_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
-    book_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    chapter_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    data_block_index: Mapped[int] = mapped_column(Integer, nullable=False)
-
-    book: Mapped['Book'] = relationship('Book', back_populates='bookmarks')
         ForeignKeyConstraint(
             ['book_id'],
             ['books.id'],
@@ -203,51 +164,56 @@ class Bookmark(Base):
             ['owner_id'],
             ['users.id'],
             name='bookmarks_owner_id_fkey'),
+        PrimaryKeyConstraint('id', name='bookmarks_pkey')
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
+    owner_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    book_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    chapter_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    data_block_index: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    book: Mapped['Book'] = relationship('Book', back_populates='bookmarks')
+    chapter: Mapped['Chapter'] = relationship(
+        'Chapter', back_populates='bookmarks')
+    owner: Mapped['User'] = relationship('User', back_populates='bookmarks')
+
 
 class ContentParagraph(Base):
     __tablename__ = 'content_paragraphs'
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
+    __table_args__ = (
         ForeignKeyConstraint(
             ['book_id'],
             ['books.id'],
             ondelete='CASCADE',
-            name='content_paragraphs_book_id_fkey',
-        ),
-    chapter: Mapped['Chapter'] = relationship(
-        'Chapter', back_populates='bookmarks')
+            name='content_paragraphs_book_id_fkey'),
+        ForeignKeyConstraint(
             ['chapter_id'],
             ['chapters.id'],
             ondelete='SET NULL',
-            name='content_paragraphs_chapter_id_fkey',
-        ),
+            name='content_paragraphs_chapter_id_fkey'),
         PrimaryKeyConstraint('id', name='content_paragraphs_pkey'),
         UniqueConstraint('es_doc_id', name='content_paragraphs_es_doc_id_key'),
-        Index('idx_paragraphs_chapter_block', 'chapter_id', 'block_start', 'id'),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    book_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-    chapter_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-
-    block_start: Mapped[int] = mapped_column(Integer, nullable=False)
-    block_end: Mapped[int] = mapped_column(Integer, nullable=False)
-
-    tokens_from: Mapped[Optional[int]] = mapped_column(Integer)
-    tokens_to: Mapped[Optional[int]] = mapped_column(Integer)
-    es_doc_id: Mapped[Optional[str]] = mapped_column(Text)
         Index(
             'idx_paragraphs_chapter_block',
             'chapter_id',
             'block_start',
-            'id'),
+            'id')
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    block_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    block_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    book_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    chapter_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    tokens_from: Mapped[Optional[int]] = mapped_column(Integer)
+    tokens_to: Mapped[Optional[int]] = mapped_column(Integer)
+    es_doc_id: Mapped[Optional[str]] = mapped_column(Text)
+    lang: Mapped[Optional[str]] = mapped_column(Text)
     para_type: Mapped[Optional[str]] = mapped_column(Text)
 
     book: Mapped[Optional['Book']] = relationship(
-        'Book',
-        back_populates='content_paragraphs',
-    )
+        'Book', back_populates='content_paragraphs')
     chapter: Mapped[Optional['Chapter']] = relationship(
-        'Chapter',
-        back_populates='content_paragraphs',
-    )
+        'Chapter', back_populates='content_paragraphs')
