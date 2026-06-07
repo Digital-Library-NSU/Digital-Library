@@ -10,7 +10,6 @@ from app.integrations.embed_model import _HAS_ST, get_encoder
 from app.routes import *
 
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
