@@ -9,6 +9,8 @@ from app.integrations.elasticsearch import close_es_client, es_get
 from app.integrations.embed_model import _HAS_ST, get_encoder
 from app.routes import *
 
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
@@ -37,6 +39,8 @@ app.include_router(reader_router)
 app.include_router(auth_router)
 app.include_router(user_router)
 app.include_router(review_router)
+app.include_router(bookmarks_router)
+
 
 def _check_encoder_sync():
     try:

@@ -54,6 +54,7 @@ class Book(Base):
         'ContentParagraph',
         back_populates='book',
     )
+    bookmarks: Mapped[list['Bookmark']] = relationship('Bookmark', back_populates='book')
 
 
 class User(Base):
@@ -84,6 +85,7 @@ class User(Base):
         'Session',
         back_populates='user',
     )
+    bookmarks: Mapped[list['Bookmark']] = relationship('Bookmark', back_populates='owner')
 
 
 class Chapter(Base):
@@ -112,6 +114,7 @@ class Chapter(Base):
         'ContentParagraph',
         back_populates='chapter',
     )
+    bookmarks: Mapped[list['Bookmark']] = relationship('Bookmark', back_populates='chapter')
 
 
 class Review(Base):
@@ -165,6 +168,26 @@ class Session(Base):
         'User',
         back_populates='sessions',
     )
+
+
+class Bookmark(Base):
+    __tablename__ = 'bookmarks'
+    __table_args__ = (
+        ForeignKeyConstraint(['book_id'], ['books.id'], name='bookmarks_book_id_fkey'),
+        ForeignKeyConstraint(['chapter_id'], ['chapters.id'], name='bookmarks_chapter_id_fkey'),
+        ForeignKeyConstraint(['owner_id'], ['users.id'], name='bookmarks_owner_id_fkey'),
+        PrimaryKeyConstraint('id', name='bookmarks_pkey')
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
+    owner_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    book_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    chapter_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    symbol_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    book: Mapped['Book'] = relationship('Book', back_populates='bookmarks')
+    chapter: Mapped['Chapter'] = relationship('Chapter', back_populates='bookmarks')
+    owner: Mapped['User'] = relationship('User', back_populates='bookmarks')
 
 
 class ContentParagraph(Base):
