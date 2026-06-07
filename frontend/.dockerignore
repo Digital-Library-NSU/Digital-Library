@@ -1,0 +1,12 @@
+node_modules
+.angular
+dist
+coverage
+.cache
+
+.git
+.gitignore
+
+*.zip
+*.tar
+*.tar.gz

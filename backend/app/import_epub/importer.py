@@ -1,7 +1,7 @@
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
 import zipfile
@@ -25,7 +25,8 @@ from .text_utils import (
     tokenize_words,
 )
 from .epub_parse import parse_container_and_opf, parse_opf
-from .es_support import ensure_es_indices, es_bulk_safe
+from .es_support import ensure_es_indices, es_bulk_atomic, es_delete_book_docs
+from .covers import normalize_zip_path, resolve_href_relative, zip_actual_name
 
 _ENCODER_CACHE: Dict[Tuple[str, str], Tuple[SentenceTransformer, Optional[int], str]] = {}
 _ES_DIM_ENSURED: Dict[Tuple[str, str, str, int], bool] = {}
@@ -220,44 +221,61 @@ def _fallback_book_title(file_path: Path, meta_title: Optional[str]) -> str:
     return Path(file_path).stem
 
 def _read_zip_resource(z: zipfile.ZipFile, meta: Dict, href: str) -> tuple[bytes, str]:
+    candidates: List[str] = []
+
+    href_norm = normalize_zip_path(href)
+    if href_norm:
+        candidates.append(href_norm)
+
+    opf_path = meta.get("opf_path") or ""
+    if opf_path:
+        candidates.append(resolve_href_relative(opf_path, href_norm))
+
+    seen = set()
+
+    for cand in candidates:
+        cand = normalize_zip_path(cand)
+        if not cand or cand in seen:
+            continue
+
+        seen.add(cand)
+
+        actual = zip_actual_name(z, cand)
+        if actual is not None:
+            return z.read(actual), normalize_zip_path(actual)
+
+    raise KeyError(href)
+
+def _zip_resource_exists(z: zipfile.ZipFile, meta: Dict, href: str) -> bool:
     try:
-        return z.read(href), href
+        _read_zip_resource(z, meta, href)
+        return True
     except KeyError:
-        opf_dir = Path(meta.get("opf_path") or "").parent
-        alt = str(opf_dir / href) if str(opf_dir) not in ("", ".") else href
-        return z.read(alt), alt
+        return False
+
 
 def _preflight_check_spine_missing(z: zipfile.ZipFile, meta: Dict, args, file_name: str) -> bool:
     missing = 0
     max_warn = getattr(args, "warn_cap", 5)
-    max_missing_spine = getattr(args, "max_missing_spine", 50)
-
-    opf_dir = Path(meta.get("opf_path") or "").parent
+    max_missing_spine = getattr(args, "max_missing_spine", 1)
 
     for href, media_type in meta.get("spine") or []:
         if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
             continue
-        try:
-            z.getinfo(href)
-            continue
-        except KeyError:
-            pass
 
-        alt = str(opf_dir / href) if str(opf_dir) not in ("", ".") else href
-        if alt != href:
-            try:
-                z.getinfo(alt)
-                continue
-            except KeyError:
-                pass
+        if _zip_resource_exists(z, meta, href):
+            continue
 
         missing += 1
+
         if missing <= max_warn:
             print(f"[WARN] missing spine resource {href}", file=sys.stderr)
 
         if missing > max_missing_spine:
             print(
-                f"[WARN] too many missing spine resources ({missing}) → skip WHOLE book (no Postgres, no ES) for {file_name}",
+                f"[WARN] too many missing spine resources ({missing}) "
+                f"> limit ({max_missing_spine}) → skip WHOLE book "
+                f"(no Postgres, no ES) for {file_name}",
                 file=sys.stderr,
             )
             return False
@@ -306,73 +324,143 @@ def _upload_chapter_to_storage(book_id: int, chapter_id: int, html: str) -> None
         content_type="application/xhtml+xml; charset=utf-8",
     )
 
+def _extract_chapter_payloads(z: zipfile.ZipFile, meta: Dict, args, file_name: str) -> Optional[List[Dict[str, Any]]]:
+    payloads: List[Dict[str, Any]] = []
+    missing = 0
+    max_warn = getattr(args, "warn_cap", 5)
+    max_missing_spine = getattr(args, "max_missing_spine", 1)
+
+    for c_idx, (href, media_type) in enumerate(meta.get("spine") or [], start=1):
+        if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
+            continue
+
+        try:
+            raw, resolved_href = _read_zip_resource(z, meta, href)
+        except KeyError:
+            missing += 1
+
+            if missing <= max_warn:
+                print(f"[WARN] missing spine resource {href}", file=sys.stderr)
+
+            if missing > max_missing_spine:
+                print(
+                    f"[WARN] too many missing spine resources in content phase ({missing}) "
+                    f"> limit ({max_missing_spine}) → skip WHOLE book for {file_name}",
+                    file=sys.stderr,
+                )
+                return None
+
+            continue
+
+        html = raw.decode("utf-8", errors="ignore")
+
+        chap_title = None
+        try:
+            soup = BeautifulSoup(html, "lxml")
+            h = soup.find(["h1", "h2", "title"])
+            chap_title = h.get_text().strip() if h else None
+        except Exception:
+            pass
+
+        blocks, _annotated_html = html_to_indexed_blocks(html)
+
+        if not args.no_join_short_paragraphs:
+            blocks = coalesce_short_paragraphs(blocks, args.min_paragraph_words)
+
+        block_token_counts = [len(tokenize_words(block.text)) for block in blocks]
+
+        prefix = [0]
+        for count in block_token_counts:
+            prefix.append(prefix[-1] + count)
+
+        wins = paragraph_windows(
+            blocks,
+            args.para_window_size,
+            args.para_window_stride,
+        )
+
+        payloads.append(
+            {
+                "ord": c_idx,
+                "href": resolved_href,
+                "html": html,
+                "title": chap_title,
+                "blocks": blocks,
+                "prefix": prefix,
+                "wins": wins,
+            }
+        )
+
+    if missing > 0:
+        print(
+            f"[WARN] missing spine resources total (content phase): {missing} (file: {file_name})",
+            file=sys.stderr,
+        )
+
+    return payloads
+
 def process_epub(file_path: Path, args):
-    conn = _connect_from_args(args)
+    idx_meta: str = args.es_index_meta
+    idx_content: str = args.es_index_content
 
-    try:
-        idx_meta: str = args.es_index_meta
-        idx_content: str = args.es_index_content
+    print(f"[INFO] Processing EPUB: {file_path.name}")
 
-        print(f"[INFO] Processing EPUB: {file_path.name}")
+    with zipfile.ZipFile(file_path, "r") as z:
+        try:
+            opf_path = parse_container_and_opf(z)
+            meta = parse_opf(z, opf_path)
+        except Exception as e:
+            print(f"[WARN] {file_path.name}: OPF parse failed: {e}", file=sys.stderr)
+            return "skipped"
 
-        with zipfile.ZipFile(file_path, "r") as z:
-            # 1) OPF
-            try:
-                opf_path = parse_container_and_opf(z)
-                meta = parse_opf(z, opf_path)
-            except Exception as e:
-                print(f"[WARN] {file_path.name}: OPF parse failed: {e}", file=sys.stderr)
-                return "skipped"
+        if not _preflight_check_spine_missing(z, meta, args, file_path.name):
+            return "skipped"
 
-            if not _preflight_check_spine_missing(z, meta, args, file_path.name):
-                return "skipped"
+        chapter_payloads = _extract_chapter_payloads(z, meta, args, file_path.name)
 
+        if chapter_payloads is None:
+            return "skipped"
+
+        has_content = any(payload["wins"] for payload in chapter_payloads)
+
+        if not has_content:
+            print(
+                f"[WARN] no content windows extracted → skip WHOLE book "
+                f"(no Postgres, no ES) for {file_path.name}",
+                file=sys.stderr,
+            )
+            return {
+                "status": "skipped_empty_content",
+                "filename": file_path.name,
+                "chapters": len(chapter_payloads),
+                "content_docs": 0,
+            }
+
+        conn = _connect_from_args(args)
+
+        book_id: Optional[int] = None
+
+        try:
             with conn.cursor() as cur:
-                # 2) Book
                 book_id = find_or_insert_book(cur, meta, meta["subjects"])
-                try:
-                    _upload_cover_to_storage(z, meta, book_id)
-                except Exception as e:
-                    print(f"[WARN] cannot upload cover to storage for book {book_id}: {e}", file=sys.stderr)
 
-                # 3) Chapters + upload annotated chapter XML to MinIO
-                chapter_ids: List[Optional[int]] = []
-
-                for idx, (href, media_type) in enumerate(meta["spine"], start=1):
-                    if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
-                        chapter_ids.append(None)
-                        continue
-
-                    try:
-                        raw, resolved_href = _read_zip_resource(z, meta, href)
-                    except KeyError:
-                        chapter_ids.append(None)
-                        continue
-
-                    html = raw.decode("utf-8", errors="ignore")
-
-                    chap_title = None
-                    try:
-                        soup = BeautifulSoup(html, "lxml")
-                        h = soup.find(["h1", "h2", "title"])
-                        chap_title = (h.get_text() if h else None) if h else None
-
-                        if chap_title:
-                            chap_title = chap_title.strip()
-                    except Exception:
-                        pass
-
-                    cid = insert_chapter(cur, book_id, idx, chap_title)
-                    chapter_ids.append(cid)
-
-                    if cid is not None:
-                        try:
-                            _upload_chapter_to_storage(book_id, cid, html)
-                        except Exception as e:
-                            print(f"[WARN] cannot upload chapter {cid} xml to storage: {e}", file=sys.stderr)
-
-                # 4) ES meta document
                 book_title_for_es = _fallback_book_title(file_path, meta.get("title"))
+
+                chapter_ids_by_ord: Dict[int, int] = {}
+
+                for payload in chapter_payloads:
+                    cid = insert_chapter(
+                        cur,
+                        book_id,
+                        payload["ord"],
+                        payload["title"],
+                    )
+                    chapter_ids_by_ord[payload["ord"]] = cid
+
+                meta_doc: Dict[str, Any] = {}
+                content_docs: List[Dict[str, Any]] = []
+                texts_for_embed: List[str] = []
+                words_running = 0
 
                 if not args.no_es:
                     authors = meta["creators"]
@@ -395,50 +483,13 @@ def process_epub(file_path: Path, args):
                         "pub_year": pub_year,
                         "description": meta["description"] or "",
                     }
-                else:
-                    meta_doc = {}
 
-                # 5) ES content documents + Postgres paragraph metadata
-                content_docs: List[Dict] = []
-                texts_for_embed: List[str] = []
-                words_running = 0
-
-                missing = 0
-                max_warn = getattr(args, "warn_cap", 5)
-
-                for c_idx, (href, media_type) in enumerate(meta["spine"], start=1):
-                    if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
-                        continue
-
-                    try:
-                        raw, resolved_href = _read_zip_resource(z, meta, href)
-                    except KeyError:
-                        missing += 1
-
-                        if missing <= max_warn:
-                            print(f"[WARN] missing spine resource {href}", file=sys.stderr)
-
-                        continue
-
-                    html = raw.decode("utf-8", errors="ignore")
-                    chapter_id = chapter_ids[c_idx - 1] if c_idx - 1 < len(chapter_ids) else None
-
-                    blocks, _annotated_html = html_to_indexed_blocks(html)
-
-                    if not args.no_join_short_paragraphs:
-                        blocks = coalesce_short_paragraphs(blocks, args.min_paragraph_words)
-
-                    block_token_counts = [len(tokenize_words(block.text)) for block in blocks]
-
-                    prefix = [0]
-                    for c in block_token_counts:
-                        prefix.append(prefix[-1] + c)
-
-                    wins = paragraph_windows(
-                        blocks,
-                        args.para_window_size,
-                        args.para_window_stride,
-                    )
+                for payload in chapter_payloads:
+                    c_idx = payload["ord"]
+                    chapter_id = chapter_ids_by_ord.get(c_idx)
+                    blocks = payload["blocks"]
+                    prefix = payload["prefix"]
+                    wins = payload["wins"]
 
                     base_offset = words_running
 
@@ -449,7 +500,6 @@ def process_epub(file_path: Path, args):
                             continue
 
                         kind_first = win_blocks[0].kind if win_blocks else "paragraph"
-
                         block_start = win_blocks[0].block_start
                         block_end = win_blocks[-1].block_end
 
@@ -462,19 +512,15 @@ def process_epub(file_path: Path, args):
                             {
                                 "_id": base_doc_id,
                                 "book_id": str(book_id),
-
                                 "chapter_id": chapter_id,
                                 "chapter_ord": c_idx,
-
                                 "lang": meta["language"] or "",
                                 "title": book_title_for_es,
                                 "content": para_text,
                                 "length": len(para_text),
-
                                 "block_start": block_start,
                                 "block_end": block_end,
                                 "block_offsets": block_offsets,
-
                                 "para_type": kind_first,
                                 "subchunk_idx": 0,
                             }
@@ -498,31 +544,27 @@ def process_epub(file_path: Path, args):
 
                     words_running += prefix[-1]
 
-                if missing > 0:
+                if not content_docs:
+                    conn.rollback()
                     print(
-                        f"[WARN] missing spine resources total (content phase): {missing} (file: {file_path.name})",
+                        f"[WARN] no content_docs generated → rollback Postgres and skip ES for {file_path.name}",
                         file=sys.stderr,
                     )
+                    return {
+                        "status": "skipped_empty_content",
+                        "book_id": book_id,
+                        "title": book_title_for_es,
+                        "chapters": len(chapter_ids_by_ord),
+                        "content_docs": 0,
+                    }
 
-                # 6) Embeddings
+                dense_vec_dim = int(getattr(args, "es_dense_vector_dim", 0) or 0)
+
                 if args.embed_model:
                     enc, enc_dev = get_encoder(args.embed_model, device_mode=args.embed_device)
 
-                    if args.es_dense_vector_dim <= 0:
-                        enc_dim = get_encoder_dim(args.embed_model, enc_dev)
-                        ensure_key = (args.es_url, idx_meta, idx_content, int(enc_dim))
-
-                        if not _ES_DIM_ENSURED.get(ensure_key):
-                            ensure_es_indices(
-                                args.es_url,
-                                idx_meta,
-                                idx_content,
-                                store_source=not args.es_no_source,
-                                use_templates=args.es_use_templates,
-                                dense_vec_dim=enc_dim,
-                                enable_suggest=args.es_enable_suggest,
-                            )
-                            _ES_DIM_ENSURED[ensure_key] = True
+                    if dense_vec_dim <= 0:
+                        dense_vec_dim = get_encoder_dim(args.embed_model, enc_dev)
 
                     batch = args.embed_batch_size
                     vecs: List[List[float]] = []
@@ -542,43 +584,87 @@ def process_epub(file_path: Path, args):
                             )
                             vecs.extend(embs.tolist())
 
-                    vi = 0
-                    for d in content_docs:
-                        d["content_vec"] = vecs[vi]
-                        vi += 1
+                    if len(vecs) != len(content_docs):
+                        raise RuntimeError(
+                            f"Embedding count mismatch: vecs={len(vecs)}, content_docs={len(content_docs)}"
+                        )
 
-                # 7) Commit Postgres + bulk ES
-                conn.commit()
+                    for d, vec in zip(content_docs, vecs):
+                        d["content_vec"] = vec
 
                 if not args.no_es:
-                    es_bulk_safe(
+                    ensure_es_indices(
                         args.es_url,
                         idx_meta,
                         idx_content,
-                        meta_doc,
-                        content_docs,
+                        store_source=not args.es_no_source,
+                        use_templates=args.es_use_templates,
+                        dense_vec_dim=dense_vec_dim,
+                        enable_suggest=args.es_enable_suggest,
                     )
 
-                conn.commit()
+                    try:
+                        es_bulk_atomic(
+                            args.es_url,
+                            idx_meta,
+                            idx_content,
+                            meta_doc,
+                            content_docs,
+                        )
+                    except Exception:
+                        conn.rollback()
+                        raise
+
+                try:
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+
+                    if not args.no_es and book_id is not None:
+                        es_delete_book_docs(
+                            args.es_url,
+                            idx_meta,
+                            idx_content,
+                            book_id,
+                        )
+
+                    raise
+
+                # MinIO/S3 upload is intentionally after DB+ES success.
+                # It is not part of the DB+ES pseudo-transaction.
+                try:
+                    _upload_cover_to_storage(z, meta, book_id)
+                except Exception as e:
+                    print(f"[WARN] cannot upload cover to storage for book {book_id}: {e}", file=sys.stderr)
+
+                for payload in chapter_payloads:
+                    cid = chapter_ids_by_ord.get(payload["ord"])
+                    if cid is None:
+                        continue
+
+                    try:
+                        _upload_chapter_to_storage(book_id, cid, payload["html"])
+                    except Exception as e:
+                        print(f"[WARN] cannot upload chapter {cid} xml to storage: {e}", file=sys.stderr)
 
                 return {
                     "status": "ok",
                     "book_id": book_id,
                     "title": book_title_for_es,
-                    "chapters": len([cid for cid in chapter_ids if cid is not None]),
+                    "chapters": len(chapter_ids_by_ord),
                     "content_docs": len(content_docs),
                 }
 
-    except Exception:
-        try:
-            conn.rollback()
         except Exception:
-            pass
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
-        raise
+            raise
 
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass

@@ -1,0 +1,211 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: library-postgres
+    environment:
+      POSTGRES_DB: library
+      POSTGRES_USER: libuser
+      POSTGRES_PASSWORD: libpass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U libuser -d library"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7
+    container_name: library-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  elasticsearch:
+    image: elastic/elasticsearch:8.14.1
+    container_name: library-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms2g -Xmx2g"
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: library-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: library-minio-init
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 minioadmin minioadmin; do
+        echo 'waiting for minio...';
+        sleep 2;
+      done;
+      mc mb -p local/library-content || true;
+      exit 0;
+      "
+
+  backend:
+    image: digital-library-backend:dev
+    container_name: library-backend
+    build:
+      context: ./backend
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_started
+      minio:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    environment:
+      PYTHONUNBUFFERED: "1"
+
+      PG_DSN: postgresql://libuser:libpass@db:5432/library
+
+      ES_URL: http://elasticsearch:9200
+      ES_INDEX_META: books_meta
+      ES_INDEX_CONTENT: books_content
+      IDX_META: books_meta
+      IDX_CONTENT: books_content
+
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      REDIS_URL: redis://redis:6379/0
+
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: library-content
+      MINIO_REGION: us-east-1
+
+      UPLOAD_TMP_DIR: /tmp/library_uploads
+
+      EMBED_MODEL: /models/bge-m3
+      EMBED_DEVICE: auto
+      EMBED_NORMALIZE: "true"
+      MAX_MISSING_SPINE: "1"
+    volumes:
+      - ./backend:/app
+      - ./models:/models:ro
+      - upload_tmp:/tmp/library_uploads
+      - ./books:/books:ro
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  celery:
+    image: digital-library-backend:dev
+    container_name: library-celery
+    build:
+      context: ./backend
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_started
+      minio:
+        condition: service_started
+    environment:
+      PYTHONUNBUFFERED: "1"
+
+      PG_DSN: postgresql://libuser:libpass@db:5432/library
+
+      ES_URL: http://elasticsearch:9200
+      ES_INDEX_META: books_meta
+      ES_INDEX_CONTENT: books_content
+      IDX_META: books_meta
+      IDX_CONTENT: books_content
+
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      REDIS_URL: redis://redis:6379/0
+
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: library-content
+      MINIO_REGION: us-east-1
+
+      UPLOAD_TMP_DIR: /tmp/library_uploads
+
+      EMBED_MODEL: /models/bge-m3
+      EMBED_DEVICE: auto
+      EMBED_NORMALIZE: "true"
+      MAX_MISSING_SPINE: "1"
+    volumes:
+      - ./backend:/app
+      - ./models:/models:ro
+      - upload_tmp:/tmp/library_uploads
+      - ./books:/books:ro
+    command: celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=1
+
+  frontend:
+    image: digital-library-frontend:dev
+    container_name: library-frontend
+    build:
+      context: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "4200:4200"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    command: npm start -- --host 0.0.0.0 --port 4200 --poll 2000
+
+volumes:
+  postgres_data:
+  redis_data:
+  elasticsearch_data:
+  minio_data:
+  upload_tmp:
+  frontend_node_modules:

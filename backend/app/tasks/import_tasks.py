@@ -11,6 +11,7 @@ from app.config import (
     EMBED_MODEL,
     EMBED_DEVICE,
     EMBED_NORMALIZE,
+    MAX_MISSING_SPINE,
 )
 from app.import_epub import process_epub
 
@@ -41,7 +42,7 @@ def _build_import_args() -> Namespace:
         para_window_stride=1,
 
         # битые EPUB
-        max_missing_spine=50,
+        max_missing_spine=MAX_MISSING_SPINE,
         warn_cap=5,
 
         # embeddings

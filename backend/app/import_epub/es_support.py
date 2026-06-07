@@ -229,14 +229,53 @@ def es_bulk(es_url: str, index: str, docs: List[Dict], id_field: Optional[str] =
             raise RuntimeError(f"ES bulk failed: {r.status_code} {r.text[:1000]}")
 
 
-def es_bulk_safe(es_url: str, idx_meta: str, idx_content: str, meta_doc: Dict, content_docs: List[Dict]):
-    if meta_doc:
-        try:
-            es_bulk(es_url, idx_meta, [meta_doc], id_field="book_id", chunk_size=1)
-        except Exception as e:
-            print(f"[WARN] ES meta bulk failed for book {meta_doc.get('book_id')}: {e}")
-    if content_docs:
-        try:
-            es_bulk(es_url, idx_content, content_docs, id_field="_id", chunk_size=1000)
-        except Exception as e:
-            print(f"[WARN] ES content bulk failed: {e}")
+def es_delete_book_docs(es_url: str, idx_meta: str, idx_content: str, book_id: int | str):
+    book_id_str = str(book_id)
+
+    # delete meta doc
+    r = requests.delete(f"{es_url}/{idx_meta}/_doc/{book_id_str}?refresh=true", timeout=30)
+    if r.status_code not in (200, 202, 404):
+        print(f"[WARN] ES delete meta failed for book {book_id_str}: {r.status_code} {r.text[:500]}")
+
+    # delete content docs
+    body = {
+        "query": {
+            "term": {
+                "book_id": book_id_str
+            }
+        }
+    }
+
+    r = requests.post(
+        f"{es_url}/{idx_content}/_delete_by_query?refresh=true&conflicts=proceed",
+        json=body,
+        timeout=120,
+    )
+
+    if r.status_code not in (200, 404):
+        print(f"[WARN] ES delete content failed for book {book_id_str}: {r.status_code} {r.text[:500]}")
+
+
+def es_bulk_atomic(
+    es_url: str,
+    idx_meta: str,
+    idx_content: str,
+    meta_doc: Dict,
+    content_docs: List[Dict],
+):
+    if not meta_doc:
+        raise RuntimeError("ES meta_doc is empty")
+
+    if not content_docs:
+        raise RuntimeError("Refusing to index book without content_docs")
+
+    book_id = meta_doc.get("book_id")
+    if book_id is None:
+        raise RuntimeError("ES meta_doc has no book_id")
+
+    try:
+        es_bulk(es_url, idx_meta, [meta_doc], id_field="book_id", chunk_size=1)
+        es_bulk(es_url, idx_content, content_docs, id_field="_id", chunk_size=1000)
+    except Exception:
+        es_delete_book_docs(es_url, idx_meta, idx_content, book_id)
+        raise

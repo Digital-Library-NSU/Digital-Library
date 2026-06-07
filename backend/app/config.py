@@ -35,3 +35,16 @@ CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:63
 # сюда API временно сохраняет загруженные EPUB,
 # а Celery worker потом их забирает.
 UPLOAD_TMP_DIR = os.getenv("UPLOAD_TMP_DIR", "/tmp/library_uploads")
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+MAX_MISSING_SPINE = _int_env("MAX_MISSING_SPINE", 1)

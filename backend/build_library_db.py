@@ -64,7 +64,7 @@ def main():
     ap.add_argument(
         "--max-missing-spine",
         type=int,
-        default=50,
+        default=int(os.getenv("MAX_MISSING_SPINE", "1")),
         help="Сколько отсутствующих ресурсов в spine допускаем, прежде чем пропустить EPUB",
     )
     ap.add_argument(
