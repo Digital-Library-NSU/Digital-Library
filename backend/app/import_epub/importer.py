@@ -1,43 +1,38 @@
 import sys
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
-import zipfile
-from bs4 import BeautifulSoup
-
 import torch
+from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer
 
-from app.integrations.object_storage import (
-    book_cover_key,
-    chapter_key,
-    cover_content_type,
-    put_bytes_sync,
-)
+from app.integrations.object_storage import (book_cover_key, chapter_key,
+                                             cover_content_type,
+                                             put_bytes_sync)
 
-from .text_utils import (
-    html_to_indexed_blocks,
-    coalesce_short_paragraphs,
-    paragraph_windows,
-    build_window_content_and_offsets,
-    tokenize_words,
-)
+from .covers import normalize_zip_path, resolve_href_relative, zip_actual_name
 from .epub_parse import parse_container_and_opf, parse_opf
 from .es_support import ensure_es_indices, es_bulk_atomic, es_delete_book_docs
-from .covers import normalize_zip_path, resolve_href_relative, zip_actual_name
+from .text_utils import (build_window_content_and_offsets,
+                         coalesce_short_paragraphs, html_to_indexed_blocks,
+                         paragraph_windows, tokenize_words)
 
-_ENCODER_CACHE: Dict[Tuple[str, str], Tuple[SentenceTransformer, Optional[int], str]] = {}
+_ENCODER_CACHE: Dict[Tuple[str, str],
+                     Tuple[SentenceTransformer, Optional[int], str]] = {}
 _ES_DIM_ENSURED: Dict[Tuple[str, str, str, int], bool] = {}
 
 # ---------- Embedding helpers ----------
+
 
 def _resolve_device(device_mode: str) -> str:
     if device_mode == "auto":
         if torch is not None and torch.cuda.is_available():
             return "cuda"
-        if torch is not None and getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        if torch is not None and getattr(
+                torch.backends, "mps", None) and torch.backends.mps.is_available():
             return "mps"
         return "cpu"
     if device_mode in ("cpu", "cuda", "mps"):
@@ -49,7 +44,8 @@ def get_encoder(model_name: Optional[str], device_mode: str = "auto"):
     if not model_name:
         return None, "cpu"
     if SentenceTransformer is None:
-        raise RuntimeError("sentence-transformers не установлен. pip install sentence-transformers")
+        raise RuntimeError(
+            "sentence-transformers не установлен. pip install sentence-transformers")
 
     dev = _resolve_device(device_mode)
     key = (model_name, dev)
@@ -103,14 +99,20 @@ def get_encoder_dim(model_name: str, device: str) -> int:
         dim = len(test[0])
 
     _ENCODER_CACHE[key] = (enc, int(dim), dev)
-    print(f"[INFO] Embedding model dim resolved: {model_name}, dim={dim}, device={dev}")
+    print(
+        f"[INFO] Embedding model dim resolved: {model_name}, dim={dim}, device={dev}")
     return int(dim)
 
 
 def parse_date(date_raw: str) -> Optional[str]:
     if not date_raw:
         return None
-    fmts = ["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m", "%Y"]
+    fmts = [
+        "%Y-%m-%d",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m",
+        "%Y"]
     for fmt in fmts:
         try:
             dt = datetime.strptime(date_raw[: len(fmt)], fmt)
@@ -120,7 +122,8 @@ def parse_date(date_raw: str) -> Optional[str]:
     return None
 
 
-def find_or_insert_book(cur, meta, subjects_list: List[str]) -> int:
+def find_or_insert_book(
+        cur, meta, subjects_list: List[str], total_blocks_count: int) -> int:
     authors = meta.get("creators") or None
     pub_date = parse_date(meta.get("date_raw") or "")
 
@@ -149,8 +152,8 @@ def find_or_insert_book(cur, meta, subjects_list: List[str]) -> int:
 
     cur.execute(
         """
-        INSERT INTO books (title, authors, lang, description, publisher, pub_date, subjects, series)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        INSERT INTO books (title, authors, lang, description, publisher, pub_date, subjects, series, total_blocks_count)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
         """,
         (
@@ -162,21 +165,24 @@ def find_or_insert_book(cur, meta, subjects_list: List[str]) -> int:
             pub_date,
             subjects_list if subjects_list else None,
             None,
+            total_blocks_count
         ),
     )
     return cur.fetchone()[0]
 
 
-def insert_chapter(cur, book_id: int, ord_: int, title: Optional[str]) -> int:
+def insert_chapter(cur, book_id: int, ord_: int,
+                   title: Optional[str], blocks_count: int) -> int:
     cur.execute(
         """
-        INSERT INTO chapters (book_id, ord, title)
-        VALUES (%s,%s,%s)
+        INSERT INTO chapters (book_id, ord, title, blocks_count)
+        VALUES (%s,%s,%s,%s)
         ON CONFLICT (book_id, ord) DO UPDATE
-        SET title = COALESCE(EXCLUDED.title, chapters.title)
+        SET title = COALESCE(EXCLUDED.title, chapters.title),
+            blocks_count = COALESCE(EXCLUDED.blocks_count, chapters.blocks_count)
         RETURNING id
         """,
-        (book_id, ord_, title or None),
+        (book_id, ord_, title or None, blocks_count),
     )
     return cur.fetchone()[0]
 
@@ -220,7 +226,9 @@ def _fallback_book_title(file_path: Path, meta_title: Optional[str]) -> str:
         return meta_title
     return Path(file_path).stem
 
-def _read_zip_resource(z: zipfile.ZipFile, meta: Dict, href: str) -> tuple[bytes, str]:
+
+def _read_zip_resource(z: zipfile.ZipFile, meta: Dict,
+                       href: str) -> tuple[bytes, str]:
     candidates: List[str] = []
 
     href_norm = normalize_zip_path(href)
@@ -246,6 +254,7 @@ def _read_zip_resource(z: zipfile.ZipFile, meta: Dict, href: str) -> tuple[bytes
 
     raise KeyError(href)
 
+
 def _zip_resource_exists(z: zipfile.ZipFile, meta: Dict, href: str) -> bool:
     try:
         _read_zip_resource(z, meta, href)
@@ -254,7 +263,8 @@ def _zip_resource_exists(z: zipfile.ZipFile, meta: Dict, href: str) -> bool:
         return False
 
 
-def _preflight_check_spine_missing(z: zipfile.ZipFile, meta: Dict, args, file_name: str) -> bool:
+def _preflight_check_spine_missing(
+        z: zipfile.ZipFile, meta: Dict, args, file_name: str) -> bool:
     missing = 0
     max_warn = getattr(args, "warn_cap", 5)
     max_missing_spine = getattr(args, "max_missing_spine", 1)
@@ -281,10 +291,11 @@ def _preflight_check_spine_missing(z: zipfile.ZipFile, meta: Dict, args, file_na
             return False
 
     if missing > 0:
-        print(f"[WARN] missing spine resources total: {missing} (file: {file_name})", file=sys.stderr)
+        print(
+            f"[WARN] missing spine resources total: {missing} (file: {file_name})",
+            file=sys.stderr)
 
     return True
-
 
 
 def _connect_from_args(args):
@@ -294,7 +305,8 @@ def _connect_from_args(args):
     return psycopg2.connect(dsn)
 
 
-def _upload_cover_to_storage(z: zipfile.ZipFile, meta: Dict, book_id: int) -> None:
+def _upload_cover_to_storage(
+        z: zipfile.ZipFile, meta: Dict, book_id: int) -> None:
     cover_href = meta.get("cover_href")
 
     if not cover_href:
@@ -303,7 +315,9 @@ def _upload_cover_to_storage(z: zipfile.ZipFile, meta: Dict, book_id: int) -> No
     try:
         cover_bytes, resolved_href = _read_zip_resource(z, meta, cover_href)
     except KeyError:
-        print(f"[WARN] cover image not found in ZIP: {cover_href}", file=sys.stderr)
+        print(
+            f"[WARN] cover image not found in ZIP: {cover_href}",
+            file=sys.stderr)
         return
 
     ext = Path(resolved_href).suffix or ".jpg"
@@ -315,7 +329,8 @@ def _upload_cover_to_storage(z: zipfile.ZipFile, meta: Dict, book_id: int) -> No
     )
 
 
-def _upload_chapter_to_storage(book_id: int, chapter_id: int, html: str) -> None:
+def _upload_chapter_to_storage(
+        book_id: int, chapter_id: int, html: str) -> None:
     _blocks, annotated_html = html_to_indexed_blocks(html)
 
     put_bytes_sync(
@@ -324,13 +339,16 @@ def _upload_chapter_to_storage(book_id: int, chapter_id: int, html: str) -> None
         content_type="application/xhtml+xml; charset=utf-8",
     )
 
-def _extract_chapter_payloads(z: zipfile.ZipFile, meta: Dict, args, file_name: str) -> Optional[List[Dict[str, Any]]]:
+
+def _extract_chapter_payloads(z: zipfile.ZipFile, meta: Dict,
+                              args, file_name: str) -> Optional[List[Dict[str, Any]]]:
     payloads: List[Dict[str, Any]] = []
     missing = 0
     max_warn = getattr(args, "warn_cap", 5)
     max_missing_spine = getattr(args, "max_missing_spine", 1)
 
-    for c_idx, (href, media_type) in enumerate(meta.get("spine") or [], start=1):
+    for c_idx, (href, media_type) in enumerate(
+            meta.get("spine") or [], start=1):
         if not href or not href.lower().endswith((".xhtml", ".html", ".htm")):
             continue
 
@@ -365,9 +383,11 @@ def _extract_chapter_payloads(z: zipfile.ZipFile, meta: Dict, args, file_name: s
         blocks, _annotated_html = html_to_indexed_blocks(html)
 
         if not args.no_join_short_paragraphs:
-            blocks = coalesce_short_paragraphs(blocks, args.min_paragraph_words)
+            blocks = coalesce_short_paragraphs(
+                blocks, args.min_paragraph_words)
 
-        block_token_counts = [len(tokenize_words(block.text)) for block in blocks]
+        block_token_counts = [len(tokenize_words(block.text))
+                              for block in blocks]
 
         prefix = [0]
         for count in block_token_counts:
@@ -399,6 +419,7 @@ def _extract_chapter_payloads(z: zipfile.ZipFile, meta: Dict, args, file_name: s
 
     return payloads
 
+
 def process_epub(file_path: Path, args):
     idx_meta: str = args.es_index_meta
     idx_content: str = args.es_index_content
@@ -410,13 +431,17 @@ def process_epub(file_path: Path, args):
             opf_path = parse_container_and_opf(z)
             meta = parse_opf(z, opf_path)
         except Exception as e:
-            print(f"[WARN] {file_path.name}: OPF parse failed: {e}", file=sys.stderr)
+            print(
+                f"[WARN] {
+                    file_path.name}: OPF parse failed: {e}",
+                file=sys.stderr)
             return "skipped"
 
         if not _preflight_check_spine_missing(z, meta, args, file_path.name):
             return "skipped"
 
-        chapter_payloads = _extract_chapter_payloads(z, meta, args, file_path.name)
+        chapter_payloads = _extract_chapter_payloads(
+            z, meta, args, file_path.name)
 
         if chapter_payloads is None:
             return "skipped"
@@ -439,12 +464,16 @@ def process_epub(file_path: Path, args):
         conn = _connect_from_args(args)
 
         book_id: Optional[int] = None
+        total_blocks_count = sum(len(payload['blocks'])
+                                 for payload in chapter_payloads)
 
         try:
             with conn.cursor() as cur:
-                book_id = find_or_insert_book(cur, meta, meta["subjects"])
+                book_id = find_or_insert_book(
+                    cur, meta, meta["subjects"], total_blocks_count)
 
-                book_title_for_es = _fallback_book_title(file_path, meta.get("title"))
+                book_title_for_es = _fallback_book_title(
+                    file_path, meta.get("title"))
 
                 chapter_ids_by_ord: Dict[int, int] = {}
 
@@ -454,6 +483,7 @@ def process_epub(file_path: Path, args):
                         book_id,
                         payload["ord"],
                         payload["title"],
+                        len(payload['blocks'])
                     )
                     chapter_ids_by_ord[payload["ord"]] = cid
 
@@ -494,7 +524,8 @@ def process_epub(file_path: Path, args):
                     base_offset = words_running
 
                     for win_idx, (start, end, win_blocks) in enumerate(wins):
-                        para_text, block_offsets = build_window_content_and_offsets(win_blocks)
+                        para_text, block_offsets = build_window_content_and_offsets(
+                            win_blocks)
 
                         if not para_text.strip():
                             continue
@@ -547,7 +578,8 @@ def process_epub(file_path: Path, args):
                 if not content_docs:
                     conn.rollback()
                     print(
-                        f"[WARN] no content_docs generated → rollback Postgres and skip ES for {file_path.name}",
+                        f"[WARN] no content_docs generated → rollback Postgres and skip ES for {
+                            file_path.name}",
                         file=sys.stderr,
                     )
                     return {
@@ -558,13 +590,19 @@ def process_epub(file_path: Path, args):
                         "content_docs": 0,
                     }
 
-                dense_vec_dim = int(getattr(args, "es_dense_vector_dim", 0) or 0)
+                dense_vec_dim = int(
+                    getattr(
+                        args,
+                        "es_dense_vector_dim",
+                        0) or 0)
 
                 if args.embed_model:
-                    enc, enc_dev = get_encoder(args.embed_model, device_mode=args.embed_device)
+                    enc, enc_dev = get_encoder(
+                        args.embed_model, device_mode=args.embed_device)
 
                     if dense_vec_dim <= 0:
-                        dense_vec_dim = get_encoder_dim(args.embed_model, enc_dev)
+                        dense_vec_dim = get_encoder_dim(
+                            args.embed_model, enc_dev)
 
                     batch = args.embed_batch_size
                     vecs: List[List[float]] = []
@@ -586,7 +624,9 @@ def process_epub(file_path: Path, args):
 
                     if len(vecs) != len(content_docs):
                         raise RuntimeError(
-                            f"Embedding count mismatch: vecs={len(vecs)}, content_docs={len(content_docs)}"
+                            f"Embedding count mismatch: vecs={
+                                len(vecs)}, content_docs={
+                                len(content_docs)}"
                         )
 
                     for d, vec in zip(content_docs, vecs):
@@ -635,7 +675,9 @@ def process_epub(file_path: Path, args):
                 try:
                     _upload_cover_to_storage(z, meta, book_id)
                 except Exception as e:
-                    print(f"[WARN] cannot upload cover to storage for book {book_id}: {e}", file=sys.stderr)
+                    print(
+                        f"[WARN] cannot upload cover to storage for book {book_id}: {e}",
+                        file=sys.stderr)
 
                 for payload in chapter_payloads:
                     cid = chapter_ids_by_ord.get(payload["ord"])
@@ -643,9 +685,12 @@ def process_epub(file_path: Path, args):
                         continue
 
                     try:
-                        _upload_chapter_to_storage(book_id, cid, payload["html"])
+                        _upload_chapter_to_storage(
+                            book_id, cid, payload["html"])
                     except Exception as e:
-                        print(f"[WARN] cannot upload chapter {cid} xml to storage: {e}", file=sys.stderr)
+                        print(
+                            f"[WARN] cannot upload chapter {cid} xml to storage: {e}",
+                            file=sys.stderr)
 
                 return {
                     "status": "ok",
