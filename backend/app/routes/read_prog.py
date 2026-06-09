@@ -2,7 +2,8 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 from app.dtos.read_prog import ReadingProgressDTO, SetReadingProgressDTO
 from app.integrations.database import get_db_session
@@ -39,16 +40,22 @@ async def set_reading_progress(request_dto: SetReadingProgressDTO,
 
         completed_blcks_cnt = sum(rows.scalars().all())  # completed chapters
 
-        progress = int((completed_blcks_cnt + request_dto.data_block_index + 1)
-                       / total_blocks_count)
+        progress = int(((completed_blcks_cnt + request_dto.data_block_index + 1)
+                       / total_blocks_count) * 100)
 
-        await db_session.execute(
-            update(t_reading_progress).where(
-                t_reading_progress.c.user_id == user_id,
-                t_reading_progress.c.book_id == request_dto.book_id)
-            .values(curr_chapter_id=request_dto.chapter_id,
-                    curr_data_block_index=request_dto.data_block_index,
-                    progress=progress))
+        stmt = insert(t_reading_progress).values(
+            user_id=user_id,
+            book_id=request_dto.book_id,
+            curr_chapter_id=request_dto.chapter_id,
+            curr_data_block_index=request_dto.data_block_index,
+            progress=progress)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=['user_id', 'book_id'],
+            set_={'curr_chapter_id': request_dto.chapter_id,
+                  'curr_data_block_index': request_dto.data_block_index,
+                  'progress': progress})
+
+        await db_session.execute(stmt)
         await db_session.commit()
 
         return ReadingProgressDTO(book_id=request_dto.book_id,
