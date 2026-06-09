@@ -93,6 +93,18 @@ export class CatalogComponent {
         this.selectedBook = null;
     }
 
+    onBookUpdated(updated: Book) {
+        this.books = this.books.map((book) =>
+            book.book_id === updated.book_id
+                ? {
+                      ...book,
+                      avg_rating: updated.avg_rating,
+                      reviews_count: updated.reviews_count,
+                  }
+                : book
+        );
+    }
+
     openUploadModal() {
         this.showUploadModal = true;
     }

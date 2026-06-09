@@ -1,0 +1,89 @@
+.review-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 1rem;
+    background: rgba(255, 255, 255, 0.6);
+    border-radius: 8px;
+    border: 1px solid #e0e0e0;
+}
+
+.row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.rating-row label {
+    font-weight: bold;
+    color: #444;
+}
+
+.rating-input {
+    width: 70px;
+    padding: 6px 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 1rem;
+}
+
+.rating-suffix {
+    color: #777;
+}
+
+.text-input {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 0.95rem;
+    resize: vertical;
+}
+
+.error {
+    color: #c0392b;
+    margin: 0;
+    font-size: 0.9rem;
+}
+
+.actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.submit-btn,
+.cancel-btn {
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+    padding: 8px 16px;
+    border-radius: 4px;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.submit-btn {
+    background: var(--primary-text-color);
+    color: white;
+
+    &:hover:not(:disabled) {
+        background: var(--primary-hover-color);
+    }
+
+    &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+}
+
+.cancel-btn {
+    background: transparent;
+    color: var(--primary-text-color);
+    border: 1px solid var(--primary-text-color);
+
+    &:hover {
+        background: var(--primary-text-color);
+        color: white;
+    }
+}

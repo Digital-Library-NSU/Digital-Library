@@ -3,7 +3,7 @@
 
         <button class="close-btn" (click)="closeModal()">&times;</button>
 
-        @if (book) {
+        @if (currentBook; as book) {
         <div class="modal-body">
             <div class="cover-column">
                 @if (book.cover_path) {
@@ -16,6 +16,15 @@
             <div class="info-column">
                 <h2>{{ book.title }}</h2>
                 <p class="author">Автор: {{ book.authors }}</p>
+
+                <div class="rating-row">
+                    @if (book.avg_rating !== null) {
+                        <span class="rating-value">{{ book.avg_rating.toFixed(1) }} / 10</span>
+                        <span class="rating-count">({{ book.reviews_count }})</span>
+                    } @else {
+                        <span class="no-rating">Нет оценок</span>
+                    }
+                </div>
 
                 <div class="meta-grid">
                     @if (book.series) { <div><strong>Серия:</strong> {{ book.series }}</div> }
@@ -36,6 +45,11 @@
                     <p [innerHTML]="book.description"></p>
                 </div>
                 }
+
+                <app-book-reviews
+                    [bookId]="book.book_id"
+                    (reviewsChanged)="onReviewsChanged()"
+                />
             </div>
         </div>
         }

@@ -11,6 +11,14 @@
     <div class="info">
         <h3 class="title" [title]="book.title">{{ book.title }}</h3>
         <p class="author">{{ book.authors }}</p>
+        <div class="rating">
+            @if (book.avg_rating !== null) {
+                <span class="rating-value">{{ book.avg_rating.toFixed(1) }} / 10</span>
+                <span class="rating-count">({{ book.reviews_count }})</span>
+            } @else {
+                <span class="no-rating">Нет оценок</span>
+            }
+        </div>
         <div class="actions">
             <button class="read-btn" (click)="onReadClick($event)">Читать</button>
             <button class="details-btn" (click)="onDetailsClick($event)">Подробнее</button>

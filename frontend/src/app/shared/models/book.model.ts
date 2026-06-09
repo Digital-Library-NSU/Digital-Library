@@ -3,6 +3,8 @@ export interface BookCard {
     title: string;
     cover_path: string | null;
     authors: string;
+    avg_rating: number | null;
+    reviews_count: number;
 }
 
 export interface Book {
@@ -16,6 +18,8 @@ export interface Book {
     series: string | null;
     cover_path: string | null;
     authors: string;
+    avg_rating: number | null;
+    reviews_count: number;
 }
 
 export interface Snippet {

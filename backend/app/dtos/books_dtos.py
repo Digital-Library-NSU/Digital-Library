@@ -7,6 +7,8 @@ class BookCardDto(BaseModel):
     title: str
     cover_path: str | None
     authors: str
+    avg_rating: float | None
+    reviews_count: int
 
 
 class BookDto(BaseModel):
@@ -20,6 +22,8 @@ class BookDto(BaseModel):
     series: str | None
     cover_path: str | None
     authors: str
+    avg_rating: float | None
+    reviews_count: int
 
 
 class UploadBookResponseDto(BaseModel):

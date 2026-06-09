@@ -4,7 +4,7 @@ import asyncio
 from celery.result import AsyncResult
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.celery_app import celery_app
 from app.config import UPLOAD_TMP_DIR
@@ -16,7 +16,7 @@ from app.dtos.books_dtos import (
 )
 from app.integrations.database import get_db_session
 from app.integrations.object_storage import find_cover_key, get_object_bytes
-from app.integrations.orm import Book
+from app.integrations.orm import Book, Review
 from app.tasks.import_tasks import import_epub_task
 
 router = APIRouter(prefix="/books")
@@ -34,27 +34,39 @@ async def _get_cover_path(book_id: int) -> str | None:
 @router.get("/all")
 async def get_all_books(limit: int | None = None, offset: int = 0) -> list[BookCardDto]:
     async with get_db_session() as db_session:
-        stmt = select(Book).offset(offset)
+        stmt = (
+            select(
+                Book,
+                func.avg(Review.rating).label("avg_rating"),
+                func.count(Review.id).label("reviews_count"),
+            )
+            .outerjoin(Review, Review.book_id == Book.id)
+            .group_by(Book.id)
+            .order_by(Book.id)
+            .offset(offset)
+        )
 
         if limit is not None:
             stmt = stmt.limit(limit)
 
         result = await db_session.execute(stmt)
-        books = list(result.scalars())
+        rows = result.all()
 
     cover_paths = [
-        await _get_cover_path(int(book.id))
-        for book in books
+        await _get_cover_path(int(row.Book.id))
+        for row in rows
     ]
 
     return [
         BookCardDto(
-            book_id=book.id,
-            title=book.title,
+            book_id=row.Book.id,
+            title=row.Book.title,
             cover_path=cover_paths[idx],
-            authors=", ".join(book.authors or []),
+            authors=", ".join(row.Book.authors or []),
+            avg_rating=float(row.avg_rating) if row.avg_rating is not None else None,
+            reviews_count=int(row.reviews_count),
         )
-        for idx, book in enumerate(books)
+        for idx, row in enumerate(rows)
     ]
 
 
@@ -79,13 +91,24 @@ async def get_book_cover(book_id: int) -> Response:
 @router.get("/{book_id}")
 async def get_book_by_id(book_id: int) -> BookDto:
     async with get_db_session() as db_session:
-        stmt = select(Book).where(Book.id == book_id)
+        stmt = (
+            select(
+                Book,
+                func.avg(Review.rating).label("avg_rating"),
+                func.count(Review.id).label("reviews_count"),
+            )
+            .outerjoin(Review, Review.book_id == Book.id)
+            .where(Book.id == book_id)
+            .group_by(Book.id)
+        )
 
         result = await db_session.execute(stmt)
-        book = result.scalars().first()
+        row = result.first()
 
-        if book is None:
+        if row is None:
             raise HTTPException(404, "Book not found!")
+
+        book = row.Book
 
     return BookDto(
         book_id=book.id,
@@ -98,6 +121,8 @@ async def get_book_by_id(book_id: int) -> BookDto:
         series=book.series,
         cover_path=await _get_cover_path(book.id),
         authors=", ".join(book.authors or []),
+        avg_rating=float(row.avg_rating) if row.avg_rating is not None else None,
+        reviews_count=int(row.reviews_count),
     )
 
 
