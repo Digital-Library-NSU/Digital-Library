@@ -10,6 +10,7 @@ import {
 } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { AuthService } from '../../../core/services/auth.service';
+import { getFieldErrorMessage } from '../../../shared/utils/form-error-message';
 
 function passwordsMatch(group: AbstractControl): ValidationErrors | null {
     const pwd = group.get('password')?.value;
@@ -29,41 +30,61 @@ export class RegisterComponent {
     private router = inject(Router);
 
     isSubmitting = false;
+    submitted = false;
     errorMessage = '';
 
     form = this.fb.nonNullable.group(
         {
-            login: [
-                '',
-                [Validators.required, Validators.maxLength(255)],
-            ],
-            password: [
-                '',
-                [Validators.required, Validators.minLength(6)],
-            ],
+            login: ['', [Validators.required, Validators.maxLength(255)]],
+            password: ['', [Validators.required, Validators.minLength(6)]],
             confirmPassword: ['', [Validators.required]],
         },
-        { validators: passwordsMatch }
+        { validators: passwordsMatch },
     );
 
+    errorFor(controlName: string): string | null {
+        const control = this.form.get(controlName);
+        if (!control || !control.invalid) return null;
+        if (!control.touched && !this.submitted) return null;
+
+        return getFieldErrorMessage(control.errors);
+    }
+
+    showPasswordsMismatch(): boolean {
+        const confirm = this.form.get('confirmPassword');
+
+        return (
+            !!this.form.errors?.['passwordsMismatch'] &&
+            !!confirm?.valid &&
+            (confirm.touched || this.submitted)
+        );
+    }
+
     submit() {
+        this.submitted = true;
+
         if (this.form.invalid || this.isSubmitting) return;
 
         const { login, password } = this.form.getRawValue();
 
         this.isSubmitting = true;
         this.errorMessage = '';
+        this.form.disable();
 
         this.auth.register({ login, password }).subscribe({
             next: () => {
                 this.isSubmitting = false;
+                this.form.enable();
+                this.submitted = false;
                 this.router.navigateByUrl('/');
             },
             error: (err: HttpErrorResponse) => {
-                this.isSubmitting = false;
                 this.errorMessage =
                     err.error?.detail ||
                     'Не удалось зарегистрироваться. Попробуйте ещё раз.';
+                this.isSubmitting = false;
+                this.form.enable();
+                this.submitted = false;
             },
         });
     }

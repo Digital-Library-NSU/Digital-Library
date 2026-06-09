@@ -36,6 +36,12 @@
     span {
         font-size: 0.9rem;
         color: #4a5568;
+
+        &.field-error {
+            color: #c0392b;
+            font-size: 0.8rem;
+            font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+        }
     }
 
     input {
