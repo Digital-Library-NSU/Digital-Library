@@ -1,12 +1,13 @@
 .venv/
 venv/
-__pycache__/
+**/__pycache__/
 *.pyc
 .idea/
 .vscode/
 *.log
 *.epub
 **/*.epub
+**/.env
 
 # локальные папки с моделями
 integrations/model/

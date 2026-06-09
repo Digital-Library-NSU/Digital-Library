@@ -72,3 +72,13 @@ CREATE TABLE IF NOT EXISTS reviews (
 CREATE INDEX IF NOT EXISTS idx_reviews_book_id ON reviews(book_id);
 
 CREATE INDEX IF NOT EXISTS idx_reviews_user_id ON reviews(user_id);
+
+--- ===
+
+CREATE TABLE IF NOT EXISTS bookmarks (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id            UUID REFERENCES users(id) NOT NULL,
+    book_id             BIGINT REFERENCES books(id) NOT NULL,
+    chapter_id          BIGINT REFERENCES chapters(id) NOT NULL,
+    data_block_index    INT NOT NULL
+);
