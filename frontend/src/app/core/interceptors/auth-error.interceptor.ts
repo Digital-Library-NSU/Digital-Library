@@ -4,7 +4,12 @@ import { Router } from '@angular/router';
 import { catchError, throwError } from 'rxjs';
 import { AuthService } from '../services/auth.service';
 
-const SKIP_REDIRECT = ['/auth/login', '/auth/register', '/user/info'];
+const SKIP_REDIRECT = [
+    '/auth/login',
+    '/auth/register',
+    '/user/info',
+    '/bookmarks',
+];
 
 export const authErrorInterceptor: HttpInterceptorFn = (req, next) => {
     const auth = inject(AuthService);
@@ -16,13 +21,13 @@ export const authErrorInterceptor: HttpInterceptorFn = (req, next) => {
                 auth.clearUser();
 
                 const shouldRedirect = !SKIP_REDIRECT.some((p) =>
-                    req.url.includes(p)
+                    req.url.includes(p),
                 );
                 if (shouldRedirect) {
                     router.navigate(['/login']);
                 }
             }
             return throwError(() => err);
-        })
+        }),
     );
 };

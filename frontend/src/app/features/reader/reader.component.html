@@ -20,6 +20,13 @@
     @if (isSearchOpen) {
     <div class="backdrop-search" (click)="toggleSearch()"></div>
     }
+    @if (isBookmarksPanelOpen) {
+    <div class="backdrop" (click)="toggleBookmarksPanel()"></div>
+    }
+
+    <app-bookmarks-panel [bookId]="bookId" [chapters]="chaptersList.chapters" [isOpen]="isBookmarksPanelOpen"
+        (close)="toggleBookmarksPanel()" (navigate)="goToBookmark($event)">
+    </app-bookmarks-panel>
 
     <main class=" reader-main">
         <header class="reader-controls">
@@ -62,6 +69,18 @@
                 <span class="fs-label">{{fontSize}}px</span>
                 <button (click)="fontSize = fontSize + 2">A+</button>
             </div>
+
+            @if (isAuthenticated()) {
+            <div class="bookmark-controls">
+                <button class="icon-btn" [class.active]="isCurrentBlockBookmarked"
+                    (click)="toggleBookmarkAtCurrent()"
+                    [title]="isCurrentBlockBookmarked ? 'Убрать закладку' : 'Добавить закладку'">
+                    {{ isCurrentBlockBookmarked ? '★' : '☆' }}
+                </button>
+                <button class="menu-btn" (click)="toggleBookmarksPanel()">Закладки</button>
+            </div>
+            }
+
             <button class="exit-btn" (click)="exitReader()">Выход</button>
         </header>
 
