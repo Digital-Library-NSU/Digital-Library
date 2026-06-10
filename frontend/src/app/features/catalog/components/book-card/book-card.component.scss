@@ -6,7 +6,9 @@
     backdrop-filter: blur(10px);
     border-radius: 16px;
     padding: 12px;
-    transition: transform 0.2s, box-shadow 0.2s;
+    transition:
+        transform 0.2s,
+        box-shadow 0.2s;
     cursor: pointer;
     border: 1px solid rgba(255, 255, 255, 0.3);
 
@@ -65,6 +67,28 @@ img {
     margin: 0;
     font-size: 0.85rem;
     color: #666;
+}
+
+.rating {
+    margin: 6px 0 3px 0;
+    font-size: 0.85rem;
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+}
+
+.rating-value {
+    font-weight: 600;
+    color: var(--primary-text-color);
+}
+
+.rating-count {
+    color: #888;
+}
+
+.no-rating {
+    color: #aaa;
+    font-style: italic;
 }
 
 .details-btn {

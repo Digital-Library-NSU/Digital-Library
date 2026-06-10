@@ -4,13 +4,18 @@
 
         <label class="auth-field">
             <span>Логин</span>
-            <input type="text" formControlName="login" autocomplete="username" [disabled]="isSubmitting">
+            <input type="text" formControlName="login" autocomplete="username">
+            @if (errorFor('login'); as msg) {
+            <span class="field-error">{{ msg }}</span>
+            }
         </label>
 
         <label class="auth-field">
             <span>Пароль</span>
-            <input type="password" formControlName="password" autocomplete="current-password"
-                [disabled]="isSubmitting">
+            <input type="password" formControlName="password" autocomplete="current-password">
+            @if (errorFor('password'); as msg) {
+            <span class="field-error">{{ msg }}</span>
+            }
         </label>
 
         @if (errorMessage) {

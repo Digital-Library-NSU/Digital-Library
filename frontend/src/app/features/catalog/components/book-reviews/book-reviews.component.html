@@ -1,0 +1,45 @@
+<section class="reviews">
+    <h3 class="section-title">Отзывы</h3>
+
+    @if (isLoading()) {
+        <p class="status">Загрузка...</p>
+    } @else {
+        @if (isAuthenticated()) {
+            @if (myReview() && !isEditing()) {
+                <div class="my-review-block">
+                    <span class="my-review-label">Ваш отзыв</span>
+                    <app-review-item
+                        [review]="myReview()!"
+                        [canEdit]="true"
+                        [canDelete]="true"
+                        (edit)="onEditMyReview()"
+                        (delete)="onDeleteMyReview($event)"
+                    />
+                </div>
+            } @else {
+                <app-review-form
+                    [bookId]="bookId()"
+                    [initialRating]="myReview()?.rating ?? null"
+                    [initialText]="myReview()?.text ?? null"
+                    [isEditing]="isEditing()"
+                    (saved)="onFormSaved()"
+                    (cancelled)="onFormCancelled()"
+                />
+            }
+        } @else {
+            <p class="auth-hint">Войдите, чтобы оставить отзыв.</p>
+        }
+
+        @if (reviews().length > 0) {
+            <ul class="reviews-list">
+                @for (review of reviews(); track review.id) {
+                    <li>
+                        <app-review-item [review]="review" />
+                    </li>
+                }
+            </ul>
+        } @else if (!myReview()) {
+            <p class="status">Пока нет отзывов. Будьте первым!</p>
+        }
+    }
+</section>

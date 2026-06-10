@@ -51,7 +51,7 @@
     }
 
     @if (selectedBook) {
-    <app-book-details-modal [book]="selectedBook" (close)="closeDetails()">
+    <app-book-details-modal [book]="selectedBook" (close)="closeDetails()" (bookUpdated)="onBookUpdated($event)">
     </app-book-details-modal>
     }
 

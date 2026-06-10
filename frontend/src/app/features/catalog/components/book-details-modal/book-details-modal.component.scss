@@ -81,8 +81,31 @@ div {
     .author {
         font-size: 1.1rem;
         color: #7f8c8d;
-        margin-bottom: 1.5rem;
+        margin-bottom: 0.75rem;
     }
+}
+
+.rating-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    font-size: 1rem;
+}
+
+.rating-value {
+    font-weight: 600;
+    color: var(--primary-text-color);
+}
+
+.rating-count {
+    color: #888;
+    font-size: 0.9rem;
+}
+
+.no-rating {
+    color: #aaa;
+    font-style: italic;
 }
 
 .meta-grid {

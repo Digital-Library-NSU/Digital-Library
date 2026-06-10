@@ -57,6 +57,37 @@ async def create_review(
         )
 
 
+@router.get("/{book_id}/my-review")
+async def get_my_review(
+    book_id: int,
+    request: Request,
+) -> ReviewDTO:
+    user = await get_current_user(request)
+
+    async with get_db_session() as db_session:
+        result = await db_session.execute(
+            select(Review)
+            .options(selectinload(Review.user))
+            .where(
+                Review.user_id == user.id,
+                Review.book_id == book_id,
+            )
+        )
+
+        review = result.scalar_one_or_none()
+
+        if review is None:
+            raise HTTPException(404, "Review not found!")
+
+        return ReviewDTO(
+            id=review.id,
+            user_login=review.user.login,
+            rating=review.rating,
+            text=review.review_text,
+            created_at=review.created_at,
+        )
+
+
 @router.get("/{book_id}/reviews")
 async def get_book_reviews(
     book_id: int,
