@@ -82,3 +82,9 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     chapter_id          BIGINT REFERENCES chapters(id) NOT NULL,
     data_block_index    INT NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS bookmarks_owner_book_chapter_block_key
+ON bookmarks (owner_id, book_id, chapter_id, data_block_index);
+
+CREATE INDEX IF NOT EXISTS idx_bookmarks_owner_book
+ON bookmarks (owner_id, book_id);

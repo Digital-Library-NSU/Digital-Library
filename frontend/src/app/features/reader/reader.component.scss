@@ -106,6 +106,20 @@
         background: transparent;
         border: 1px solid var(--primary-text-color);
     }
+
+    .bookmark-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+
+        .icon-btn {
+            background-color: #442d1e;
+        }
+        .icon-btn.active {
+            color: #f1c40f;
+            border-color: #f1c40f;
+        }
+    }
 }
 
 .book-viewport {

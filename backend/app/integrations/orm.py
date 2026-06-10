@@ -164,7 +164,10 @@ class Bookmark(Base):
             ['owner_id'],
             ['users.id'],
             name='bookmarks_owner_id_fkey'),
-        PrimaryKeyConstraint('id', name='bookmarks_pkey')
+        PrimaryKeyConstraint('id', name='bookmarks_pkey'),
+        UniqueConstraint(
+            'owner_id', 'book_id', 'chapter_id', 'data_block_index',
+            name='bookmarks_owner_book_chapter_block_key'),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

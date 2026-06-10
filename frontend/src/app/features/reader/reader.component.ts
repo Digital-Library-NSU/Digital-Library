@@ -1,6 +1,7 @@
 import {
     Component,
     OnInit,
+    OnDestroy,
     ViewChild,
     ElementRef,
     inject,
@@ -15,20 +16,28 @@ import {
     ChaptersList,
     InBookSearchHit,
 } from '../../shared/models/reader.model';
+import { Bookmark } from '../../shared/models/bookmark.model';
 import { FormsModule } from '@angular/forms';
+import { AuthService } from '../../core/services/auth.service';
+import { BookmarkService } from '../../core/services/bookmark.service';
+import { BookmarksPanelComponent } from './components/bookmarks-panel/bookmarks-panel.component';
 
 @Component({
     selector: 'app-reader',
-    imports: [CommonModule, FormsModule],
+    imports: [CommonModule, FormsModule, BookmarksPanelComponent],
     templateUrl: './reader.component.html',
     styleUrl: './reader.component.scss',
     encapsulation: ViewEncapsulation.None,
 })
-export class ReaderComponent implements OnInit {
+export class ReaderComponent implements OnInit, OnDestroy {
     private route = inject(ActivatedRoute);
     private router = inject(Router);
     private readerService = inject(ReaderService);
     private sanitizer = inject(DomSanitizer);
+    private auth = inject(AuthService);
+    private bookmarkService = inject(BookmarkService);
+
+    readonly isAuthenticated = this.auth.isAuthenticated;
 
     @ViewChild('bookContainer') bookContainer!: ElementRef<HTMLDivElement>;
 
@@ -41,6 +50,7 @@ export class ReaderComponent implements OnInit {
     safeContent: SafeHtml | null = null;
     isLoading = false;
     isSidebarOpen = false;
+    isBookmarksPanelOpen = false;
 
     fontSize = 18;
     private readonly COLUMN_GAP = 80;
@@ -54,7 +64,15 @@ export class ReaderComponent implements OnInit {
         this.bookId = Number(this.route.snapshot.paramMap.get('id'));
         const chapterParam = this.route.snapshot.paramMap.get('chapterId');
 
+        if (this.isAuthenticated()) {
+            this.bookmarkService.load(this.bookId);
+        }
+
         this.loadTOC(chapterParam ? Number(chapterParam) : null);
+    }
+
+    ngOnDestroy() {
+        this.bookmarkService.clear();
     }
 
     loadTOC(initialChapterId: number | null) {
@@ -65,7 +83,7 @@ export class ReaderComponent implements OnInit {
                 if (initialChapterId) {
                     this.currentChapterIndex =
                         this.chaptersList.chapters.findIndex(
-                            (c) => c.chapter_id === initialChapterId
+                            (c) => c.chapter_id === initialChapterId,
                         );
                     if (this.currentChapterIndex === -1)
                         this.currentChapterIndex = 0;
@@ -75,7 +93,7 @@ export class ReaderComponent implements OnInit {
 
                 this.loadChapter(
                     this.chaptersList.chapters[this.currentChapterIndex]
-                        .chapter_id
+                        .chapter_id,
                 );
             },
             error: (err) => console.error('Failed to load TOC', err),
@@ -85,7 +103,7 @@ export class ReaderComponent implements OnInit {
     loadChapter(
         chapterId: number,
         scrollToEnd: boolean = false,
-        onSuccess?: () => void
+        onSuccess?: () => void,
     ) {
         this.isLoading = true;
         this.currentChapterId = chapterId;
@@ -107,7 +125,7 @@ export class ReaderComponent implements OnInit {
 
                         if (scrollToEnd) {
                             const totalPages = Math.ceil(
-                                totalWidth / pageWidth
+                                totalWidth / pageWidth,
                             );
 
                             const lastPageScrollPosition =
@@ -165,7 +183,7 @@ export class ReaderComponent implements OnInit {
             this.currentChapterIndex++;
             this.loadChapter(
                 this.chaptersList.chapters[this.currentChapterIndex].chapter_id,
-                false
+                false,
             );
         }
     }
@@ -175,7 +193,7 @@ export class ReaderComponent implements OnInit {
             this.currentChapterIndex--;
             this.loadChapter(
                 this.chaptersList.chapters[this.currentChapterIndex].chapter_id,
-                true
+                true,
             );
         }
     }
@@ -205,7 +223,7 @@ export class ReaderComponent implements OnInit {
         const snippet = hit.snippet;
 
         const targetIndex = this.chaptersList.chapters.findIndex(
-            (chapter) => chapter.chapter_id === snippet.chapter_id
+            (chapter) => chapter.chapter_id === snippet.chapter_id,
         );
 
         if (targetIndex === -1) {
@@ -239,7 +257,7 @@ export class ReaderComponent implements OnInit {
             const container = this.bookContainer.nativeElement;
 
             const targetEl = container.querySelector(
-                `[data-block-index="${blockIndex}"]`
+                `[data-block-index="${blockIndex}"]`,
             ) as HTMLElement | null;
 
             if (!targetEl) {
@@ -257,7 +275,7 @@ export class ReaderComponent implements OnInit {
                 left: pageIndex * stride,
                 behavior: 'smooth',
             });
-            
+
             targetEl.classList.add('search-hit-highlight');
 
             setTimeout(() => {
@@ -274,6 +292,89 @@ export class ReaderComponent implements OnInit {
         this.currentChapterIndex = index;
         this.loadChapter(this.chaptersList.chapters[index].chapter_id);
         this.isSidebarOpen = false;
+    }
+
+    toggleBookmarksPanel() {
+        this.isBookmarksPanelOpen = !this.isBookmarksPanelOpen;
+    }
+
+    private getCurrentBlockIndex(): number | null {
+        if (!this.bookContainer) return null;
+
+        const container = this.bookContainer.nativeElement;
+        const blocks = Array.from(
+            container.querySelectorAll('[data-block-index]'),
+        ) as HTMLElement[];
+
+        if (blocks.length === 0) return null;
+
+        const scrollLeft = container.scrollLeft;
+        const tolerance = 5;
+
+        const firstVisible = blocks.find(
+            (el) => el.offsetLeft >= scrollLeft - tolerance,
+        );
+        const target = firstVisible ?? blocks[blocks.length - 1];
+
+        const raw = target.getAttribute('data-block-index');
+        return raw === null ? null : Number(raw);
+    }
+
+    private findBookmarkAtCurrent(): Bookmark | undefined {
+        const blockIndex = this.getCurrentBlockIndex();
+        if (blockIndex === null) return undefined;
+
+        return this.bookmarkService
+            .bookmarks()
+            .find(
+                (b) =>
+                    b.chapter_id === this.currentChapterId &&
+                    b.data_block_index === blockIndex,
+            );
+    }
+
+    get isCurrentBlockBookmarked(): boolean {
+        return this.findBookmarkAtCurrent() !== undefined;
+    }
+
+    toggleBookmarkAtCurrent() {
+        const existing = this.findBookmarkAtCurrent();
+
+        if (existing) {
+            this.bookmarkService.remove(this.bookId, existing.bookmark_id);
+            return;
+        }
+
+        const blockIndex = this.getCurrentBlockIndex();
+        if (blockIndex === null) return;
+
+        this.bookmarkService.add(
+            this.bookId,
+            this.currentChapterId,
+            blockIndex,
+        );
+    }
+
+    goToBookmark(bookmark: Bookmark) {
+        const targetIndex = this.chaptersList.chapters.findIndex(
+            (chapter) => chapter.chapter_id === bookmark.chapter_id,
+        );
+
+        if (targetIndex === -1) {
+            console.error('Chapter not found for bookmark', bookmark);
+            return;
+        }
+
+        if (this.currentChapterIndex === targetIndex) {
+            this.scrollToBlock(bookmark.data_block_index);
+        } else {
+            this.currentChapterIndex = targetIndex;
+            this.loadChapter(bookmark.chapter_id, false, () => {
+                this.scrollToBlock(bookmark.data_block_index);
+            });
+        }
+
+        this.isBookmarksPanelOpen = false;
     }
 
     @HostListener('window:keydown', ['$event'])
