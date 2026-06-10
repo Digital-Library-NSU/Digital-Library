@@ -2,10 +2,10 @@ import datetime
 import uuid
 from typing import Optional
 
-from sqlalchemy import (ARRAY, BigInteger, CheckConstraint, Date, DateTime,
-                        Enum, ForeignKeyConstraint, Index, Integer,
-                        PrimaryKeyConstraint, String, Text, UniqueConstraint,
-                        Uuid, text)
+from sqlalchemy import (ARRAY, BigInteger, CheckConstraint, Column, Date,
+                        DateTime, Enum, ForeignKeyConstraint, Index, Integer,
+                        PrimaryKeyConstraint, String, Table, Text,
+                        UniqueConstraint, Uuid, text)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -21,6 +21,7 @@ class Book(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
+    total_blocks_count: Mapped[int] = mapped_column(Integer, nullable=False)
     authors: Mapped[Optional[list[str]]] = mapped_column(ARRAY(Text()))
     lang: Mapped[Optional[str]] = mapped_column(Text)
     description: Mapped[Optional[str]] = mapped_column(Text)
@@ -80,6 +81,7 @@ class Chapter(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     ord: Mapped[int] = mapped_column(Integer, nullable=False)
+    blocks_count: Mapped[int] = mapped_column(Integer, nullable=False)
     book_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     title: Mapped[Optional[str]] = mapped_column(Text)
 
@@ -155,6 +157,7 @@ class Bookmark(Base):
         ForeignKeyConstraint(
             ['book_id'],
             ['books.id'],
+            ondelete='CASCADE',
             name='bookmarks_book_id_fkey'),
         ForeignKeyConstraint(
             ['chapter_id'],
@@ -163,6 +166,7 @@ class Bookmark(Base):
         ForeignKeyConstraint(
             ['owner_id'],
             ['users.id'],
+            ondelete='CASCADE',
             name='bookmarks_owner_id_fkey'),
         PrimaryKeyConstraint('id', name='bookmarks_pkey'),
         UniqueConstraint(
@@ -220,3 +224,34 @@ class ContentParagraph(Base):
         'Book', back_populates='content_paragraphs')
     chapter: Mapped[Optional['Chapter']] = relationship(
         'Chapter', back_populates='content_paragraphs')
+
+
+t_reading_progress = Table(
+    'reading_progress', Base.metadata,
+    Column('user_id', Uuid, nullable=False),
+    Column('book_id', BigInteger, nullable=False),
+    Column('curr_chapter_id', BigInteger, nullable=False),
+    Column('curr_data_block_index', Integer, nullable=False),
+    Column('progress', Integer, nullable=False),
+    CheckConstraint(
+        'progress >= 0 AND progress <= 100',
+        name='reading_progress_progress_check'),
+    ForeignKeyConstraint(
+        ['book_id'],
+        ['books.id'],
+        ondelete='CASCADE',
+        name='reading_progress_book_id_fkey'),
+    ForeignKeyConstraint(
+        ['curr_chapter_id'],
+        ['chapters.id'],
+        name='reading_progress_curr_chapter_id_fkey'),
+    ForeignKeyConstraint(
+        ['user_id'],
+        ['users.id'],
+        ondelete='CASCADE',
+        name='reading_progress_user_id_fkey'),
+    UniqueConstraint(
+        'user_id',
+        'book_id',
+        name='reading_progress_user_id_book_id_key')
+)

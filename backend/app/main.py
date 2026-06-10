@@ -39,6 +39,7 @@ app.include_router(auth_router)
 app.include_router(user_router)
 app.include_router(review_router)
 app.include_router(bookmarks_router)
+app.include_router(read_prog_router)
 
 
 def _check_encoder_sync():

@@ -1,22 +1,24 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS books (
-  id          BIGSERIAL PRIMARY KEY,
-  title       TEXT NOT NULL,
-  authors     TEXT[],
-  lang        TEXT,
-  description TEXT,
-  publisher   TEXT,
-  pub_date    DATE,
-  subjects    TEXT[],
-  series      TEXT
+  id                    BIGSERIAL PRIMARY KEY,
+  title                 TEXT NOT NULL,
+  authors               TEXT[],
+  lang                  TEXT,
+  description           TEXT,
+  publisher             TEXT,
+  pub_date              DATE,
+  subjects              TEXT[],
+  series                TEXT,
+  total_blocks_count    INT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS chapters (
-  id      BIGSERIAL PRIMARY KEY,
-  book_id BIGINT REFERENCES books(id) ON DELETE CASCADE,
-  ord     INT NOT NULL,
-  title   TEXT,
+  id            BIGSERIAL PRIMARY KEY,
+  book_id       BIGINT REFERENCES books(id) ON DELETE CASCADE,
+  ord           INT NOT NULL,
+  title         TEXT,
+  blocks_count  INT NOT NULL,
   UNIQUE (book_id, ord)
 );
 
@@ -77,8 +79,8 @@ CREATE INDEX IF NOT EXISTS idx_reviews_user_id ON reviews(user_id);
 
 CREATE TABLE IF NOT EXISTS bookmarks (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    owner_id            UUID REFERENCES users(id) NOT NULL,
-    book_id             BIGINT REFERENCES books(id) NOT NULL,
+    owner_id            UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+    book_id             BIGINT REFERENCES books(id) ON DELETE CASCADE NOT NULL,
     chapter_id          BIGINT REFERENCES chapters(id) NOT NULL,
     data_block_index    INT NOT NULL
 );
@@ -88,3 +90,13 @@ ON bookmarks (owner_id, book_id, chapter_id, data_block_index);
 
 CREATE INDEX IF NOT EXISTS idx_bookmarks_owner_book
 ON bookmarks (owner_id, book_id);
+--- ===
+
+CREATE TABLE IF NOT EXISTS reading_progress (
+    user_id                 UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+    book_id                 BIGINT REFERENCES books(id) ON DELETE CASCADE NOT NULL,
+    curr_chapter_id         BIGINT REFERENCES chapters(id) NOT NULL,
+    curr_data_block_index   INT NOT NULL,
+    progress                INT NOT NULL CHECK (progress BETWEEN 0 AND 100),
+    UNIQUE (user_id, book_id)
+);
