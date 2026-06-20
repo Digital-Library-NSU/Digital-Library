@@ -38,7 +38,7 @@ export class BookmarkService {
         });
     }
 
-    remove(bookId: number, bookmarkId: string): void {
+    remove(bookId: number | string, bookmarkId: number): void {
         this.api.delete<void>(`/bookmarks/${bookId}/${bookmarkId}`).subscribe({
             next: () => {
                 this.bookmarks.update((list) =>

@@ -3,7 +3,7 @@ import uuid
 from typing import Optional
 
 from sqlalchemy import (ARRAY, BigInteger, CheckConstraint, Column, Date,
-                        DateTime, Enum, ForeignKeyConstraint, Index, Integer,
+                        DateTime, Enum, Float, ForeignKeyConstraint, Index, Integer,
                         PrimaryKeyConstraint, String, Table, Text,
                         UniqueConstraint, Uuid, text)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -38,6 +38,8 @@ class Book(Base):
         'Bookmark', back_populates='book')
     content_paragraphs: Mapped[list['ContentParagraph']] = relationship(
         'ContentParagraph', back_populates='book')
+    content_blocks: Mapped[list['ContentBlock']] = relationship(
+        'ContentBlock', back_populates='book')
 
 
 class User(Base):
@@ -91,6 +93,8 @@ class Chapter(Base):
         'Bookmark', back_populates='chapter')
     content_paragraphs: Mapped[list['ContentParagraph']] = relationship(
         'ContentParagraph', back_populates='chapter')
+    content_blocks: Mapped[list['ContentBlock']] = relationship(
+        'ContentBlock', back_populates='chapter')
 
 
 class Review(Base):
@@ -125,8 +129,7 @@ class Review(Base):
     review_text: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, server_default=text('now()'))
-    updated_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, nullable=False, server_default=text('now()'))
+    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime)
 
     book: Mapped['Book'] = relationship('Book', back_populates='reviews')
     user: Mapped['User'] = relationship('User', back_populates='reviews')
@@ -226,13 +229,57 @@ class ContentParagraph(Base):
         'Chapter', back_populates='content_paragraphs')
 
 
+class ContentBlock(Base):
+    __tablename__ = 'content_blocks'
+    __table_args__ = (
+        CheckConstraint('char_start >= 0', name='content_blocks_char_start_check'),
+        CheckConstraint('char_end >= char_start', name='content_blocks_char_end_check'),
+        CheckConstraint('char_count >= 0', name='content_blocks_char_count_check'),
+        ForeignKeyConstraint(
+            ['book_id'],
+            ['books.id'],
+            ondelete='CASCADE',
+            name='content_blocks_book_id_fkey'),
+        ForeignKeyConstraint(
+            ['chapter_id'],
+            ['chapters.id'],
+            ondelete='CASCADE',
+            name='content_blocks_chapter_id_fkey'),
+        PrimaryKeyConstraint(
+            'book_id',
+            'chapter_id',
+            'block_index',
+            name='content_blocks_pkey'),
+        Index('idx_content_blocks_chapter_offset', 'chapter_id', 'char_start')
+    )
+
+    book_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    chapter_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    block_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    char_start: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    char_end: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    book: Mapped['Book'] = relationship('Book', back_populates='content_blocks')
+    chapter: Mapped['Chapter'] = relationship(
+        'Chapter', back_populates='content_blocks')
+
+
 t_reading_progress = Table(
     'reading_progress', Base.metadata,
     Column('user_id', Uuid, nullable=False),
     Column('book_id', BigInteger, nullable=False),
     Column('curr_chapter_id', BigInteger, nullable=False),
     Column('curr_data_block_index', Integer, nullable=False),
+    Column('curr_block_char_offset', Integer, nullable=False, server_default=text('0')),
+    Column('chapter_scroll_ratio', Float, nullable=False, server_default=text('0')),
     Column('progress', Integer, nullable=False),
+    CheckConstraint(
+        'curr_block_char_offset >= 0',
+        name='reading_progress_curr_block_char_offset_check'),
+    CheckConstraint(
+        'chapter_scroll_ratio >= 0 AND chapter_scroll_ratio <= 1',
+        name='reading_progress_chapter_scroll_ratio_check'),
     CheckConstraint(
         'progress >= 0 AND progress <= 100',
         name='reading_progress_progress_check'),

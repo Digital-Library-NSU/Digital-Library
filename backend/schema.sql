@@ -38,6 +38,22 @@ CREATE TABLE IF NOT EXISTS content_paragraphs (
 CREATE INDEX IF NOT EXISTS idx_paragraphs_chapter_block
 ON content_paragraphs (chapter_id, block_start, id);
 
+CREATE TABLE IF NOT EXISTS content_blocks (
+  book_id      BIGINT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  chapter_id   BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  block_index  INT NOT NULL,
+  char_start   BIGINT NOT NULL,
+  char_end     BIGINT NOT NULL,
+  char_count   INT NOT NULL,
+  PRIMARY KEY (book_id, chapter_id, block_index),
+  CHECK (char_start >= 0),
+  CHECK (char_end >= char_start),
+  CHECK (char_count >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_blocks_chapter_offset
+ON content_blocks (chapter_id, char_start);
+
 -- === Users/Auth ===
 
 DO $$
@@ -67,7 +83,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     rating          INT NOT NULL CHECK (rating BETWEEN 1 AND 10),
     review_text     TEXT NOT NULL,
     created_at      TIMESTAMP NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMP,
     UNIQUE (user_id, book_id)
 );
 
@@ -97,6 +113,10 @@ CREATE TABLE IF NOT EXISTS reading_progress (
     book_id                 BIGINT REFERENCES books(id) ON DELETE CASCADE NOT NULL,
     curr_chapter_id         BIGINT REFERENCES chapters(id) NOT NULL,
     curr_data_block_index   INT NOT NULL,
+    curr_block_char_offset  INT NOT NULL DEFAULT 0,
+    chapter_scroll_ratio    DOUBLE PRECISION NOT NULL DEFAULT 0,
     progress                INT NOT NULL CHECK (progress BETWEEN 0 AND 100),
+    CHECK (curr_block_char_offset >= 0),
+    CHECK (chapter_scroll_ratio >= 0 AND chapter_scroll_ratio <= 1),
     UNIQUE (user_id, book_id)
 );

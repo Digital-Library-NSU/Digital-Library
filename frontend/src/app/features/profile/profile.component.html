@@ -1,0 +1,173 @@
+<app-header style="width: 100%;"></app-header>
+
+<main class="profile-page">
+    <header class="profile-header">
+        <div>
+            <h1>Профиль</h1>
+            @if (user(); as currentUser) {
+            <p>{{ currentUser.login }}</p>
+            }
+        </div>
+    </header>
+
+    <nav class="tabs">
+        <button [class.active]="activeTab() === 'reading'" (click)="selectTab('reading')">Читаю</button>
+        <button [class.active]="activeTab() === 'finished'" (click)="selectTab('finished')">Прочитано</button>
+        <button [class.active]="activeTab() === 'reviews'" (click)="selectTab('reviews')">Мои оценки и отзывы</button>
+    </nav>
+
+    @if (error()) {
+    <div class="message error">{{ error() }}</div>
+    }
+
+    @if (isLoading()) {
+    <div class="message">Загрузка...</div>
+    }
+
+    @if (!isLoading() && activeTab() === 'reading') {
+    @if (reading().length) {
+    <div class="books-grid">
+        @for (item of reading(); track item.book.book_id) {
+        <article class="book-card">
+            <div class="progress-badge">{{ item.progress }}%</div>
+            <div class="cover-wrapper">
+                @if (item.book.cover_path) {
+                <img [src]="apiUrl + item.book.cover_path" [alt]="item.book.title">
+                } @else {
+                <div class="placeholder-cover">No Cover</div>
+                }
+            </div>
+            <div class="info">
+                <h3 class="title" [title]="item.book.title">{{ item.book.title }}</h3>
+                <p class="author">{{ item.book.authors }}</p>
+                <div class="rating">
+                    @if (item.book.avg_rating !== null) {
+                    <span class="rating-value">{{ item.book.avg_rating.toFixed(1) }} / 10</span>
+                    <span class="rating-count">({{ item.book.reviews_count }})</span>
+                    } @else {
+                    <span class="no-rating">Нет оценок</span>
+                    }
+                </div>
+                <div class="actions">
+                    <button class="read-btn" (click)="continueBook(item)">Продолжить</button>
+                    <button class="details-btn" (click)="openBookDetails(item.book.book_id)">Подробнее</button>
+                </div>
+            </div>
+        </article>
+        }
+    </div>
+    } @else {
+    <div class="message">Сейчас нет книг в чтении.</div>
+    }
+    }
+
+    @if (!isLoading() && activeTab() === 'finished') {
+    @if (finished().length) {
+    <div class="books-grid">
+        @for (item of finished(); track item.book.book_id) {
+        <article class="book-card">
+            <div class="progress-badge">100%</div>
+            <div class="cover-wrapper">
+                @if (item.book.cover_path) {
+                <img [src]="apiUrl + item.book.cover_path" [alt]="item.book.title">
+                } @else {
+                <div class="placeholder-cover">No Cover</div>
+                }
+            </div>
+            <div class="info">
+                <h3 class="title" [title]="item.book.title">{{ item.book.title }}</h3>
+                <p class="author">{{ item.book.authors }}</p>
+                <div class="rating">
+                    @if (item.book.avg_rating !== null) {
+                    <span class="rating-value">{{ item.book.avg_rating.toFixed(1) }} / 10</span>
+                    <span class="rating-count">({{ item.book.reviews_count }})</span>
+                    } @else {
+                    <span class="no-rating">Нет оценок</span>
+                    }
+                </div>
+                <div class="actions">
+                    <button class="read-btn" (click)="rereadBook(item)">Перечитать</button>
+                    <button class="details-btn" (click)="openBookDetails(item.book.book_id)">Подробнее</button>
+                </div>
+            </div>
+        </article>
+        }
+    </div>
+    } @else {
+    <div class="message">Прочитанных книг пока нет.</div>
+    }
+    }
+
+    @if (!isLoading() && activeTab() === 'reviews') {
+    @if (reviews().length) {
+    <div class="review-list">
+        @for (item of reviews(); track item.id) {
+        <article class="review-card">
+            <div class="review-cover">
+                @if (item.book.cover_path) {
+                <img [src]="apiUrl + item.book.cover_path" [alt]="item.book.title">
+                } @else {
+                <div class="placeholder-cover">No Cover</div>
+                }
+                <div class="review-actions">
+                    <button class="read-btn" (click)="readReviewBook(item)">
+                        {{ getReviewBookAction(item) }}
+                    </button>
+                    <button class="details-btn" (click)="openBookDetails(item.book.book_id)">
+                        Подробнее
+                    </button>
+                </div>
+            </div>
+            <div class="review-info">
+                <h2>{{ item.book.title }}</h2>
+                <p class="author">Автор: {{ item.book.authors }}</p>
+                <div class="rating-row">
+                    @if (item.book.avg_rating !== null) {
+                    <span class="rating-value">{{ item.book.avg_rating.toFixed(1) }} / 10</span>
+                    <span class="rating-count">({{ item.book.reviews_count }})</span>
+                    } @else {
+                    <span class="no-rating">Нет оценок</span>
+                    }
+                </div>
+                <div class="my-review-block">
+                    <span class="my-review-label">Ваш отзыв</span>
+                    @if (editingReviewId() === item.id) {
+                    <app-review-form
+                        [bookId]="item.book.book_id"
+                        [initialRating]="item.rating"
+                        [initialText]="item.text"
+                        [isEditing]="true"
+                        (saved)="onReviewSaved()"
+                        (cancelled)="cancelReviewEdit()"
+                    />
+                    } @else {
+                    <app-review-item
+                        [review]="profileReviewToReview(item)"
+                        [canEdit]="true"
+                        [canDelete]="true"
+                        (edit)="editReview(item.id)"
+                        (delete)="deleteReview($event)"
+                    />
+                    }
+                </div>
+            </div>
+        </article>
+        }
+    </div>
+    } @else {
+    <div class="message">Отзывов пока нет.</div>
+    }
+    }
+
+    @if (isDetailsLoading()) {
+    <div class="message">Загрузка...</div>
+    }
+
+    @if (selectedBook()) {
+    <app-book-details-modal
+        [book]="selectedBook()"
+        (close)="closeDetails()"
+        (bookUpdated)="onBookUpdated($event)"
+    />
+    }
+</main>

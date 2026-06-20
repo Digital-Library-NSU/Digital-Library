@@ -21,4 +21,10 @@ export class HeaderComponent {
             error: () => this.router.navigate(['/']),
         });
     }
+
+    toggleProfile() {
+        this.router.navigate([
+            this.router.url.startsWith('/profile') ? '/' : '/profile',
+        ]);
+    }
 }

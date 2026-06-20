@@ -21,6 +21,11 @@ import { FormsModule } from '@angular/forms';
 import { AuthService } from '../../core/services/auth.service';
 import { BookmarkService } from '../../core/services/bookmark.service';
 import { BookmarksPanelComponent } from './components/bookmarks-panel/bookmarks-panel.component';
+import { GuestReadingProgressService } from '../../core/services/guest-reading-progress.service';
+import {
+    ReadingProgress,
+    ReadingProgressService,
+} from '../../core/services/reading-progress.service';
 
 @Component({
     selector: 'app-reader',
@@ -36,6 +41,8 @@ export class ReaderComponent implements OnInit, OnDestroy {
     private sanitizer = inject(DomSanitizer);
     private auth = inject(AuthService);
     private bookmarkService = inject(BookmarkService);
+    private guestProgress = inject(GuestReadingProgressService);
+    private readingProgress = inject(ReadingProgressService);
 
     readonly isAuthenticated = this.auth.isAuthenticated;
 
@@ -54,6 +61,8 @@ export class ReaderComponent implements OnInit, OnDestroy {
 
     fontSize = 18;
     private readonly COLUMN_GAP = 80;
+    private readonly SAVE_PROGRESS_DELAY_MS = 400;
+    private progressSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
     isSearchOpen = false;
     isSearching = false;
@@ -72,6 +81,10 @@ export class ReaderComponent implements OnInit, OnDestroy {
     }
 
     ngOnDestroy() {
+        this.saveReadingProgress();
+        if (this.progressSaveTimer) {
+            clearTimeout(this.progressSaveTimer);
+        }
         this.bookmarkService.clear();
     }
 
@@ -79,25 +92,61 @@ export class ReaderComponent implements OnInit, OnDestroy {
         this.readerService.getAllChapters(this.bookId).subscribe({
             next: (data) => {
                 this.chaptersList = data;
-
-                if (initialChapterId) {
-                    this.currentChapterIndex =
-                        this.chaptersList.chapters.findIndex(
-                            (c) => c.chapter_id === initialChapterId,
-                        );
-                    if (this.currentChapterIndex === -1)
-                        this.currentChapterIndex = 0;
-                } else {
-                    this.currentChapterIndex = 0;
-                }
-
-                this.loadChapter(
-                    this.chaptersList.chapters[this.currentChapterIndex]
-                        .chapter_id,
-                );
+                this.loadInitialChapter(initialChapterId);
             },
             error: (err) => console.error('Failed to load TOC', err),
         });
+    }
+
+    private loadInitialChapter(initialChapterId: number | null) {
+        if (this.isAuthenticated()) {
+            this.readingProgress.getAll().subscribe({
+                next: (items) => {
+                    const savedProgress =
+                        items.find((item) => item.book_id === this.bookId) ??
+                        null;
+                    this.openInitialChapter(initialChapterId, savedProgress);
+                },
+                error: () => this.openInitialChapter(initialChapterId, null),
+            });
+            return;
+        }
+
+        this.openInitialChapter(
+            initialChapterId,
+            this.guestProgress.get(this.bookId),
+        );
+    }
+
+    private openInitialChapter(
+        initialChapterId: number | null,
+        savedProgress:
+            | ReadingProgress
+            | { chapterId: number; dataBlockIndex: number; scrollLeft?: number }
+            | null,
+    ) {
+        const savedChapterId =
+            savedProgress && 'chapter_id' in savedProgress
+                ? savedProgress.chapter_id
+                : savedProgress?.chapterId;
+        const requestedChapterId = savedChapterId ?? initialChapterId;
+
+        if (requestedChapterId) {
+            this.currentChapterIndex = this.chaptersList.chapters.findIndex(
+                (c) => c.chapter_id === requestedChapterId,
+            );
+            if (this.currentChapterIndex === -1) this.currentChapterIndex = 0;
+        } else {
+            this.currentChapterIndex = 0;
+        }
+
+        this.loadChapter(
+            this.chaptersList.chapters[this.currentChapterIndex].chapter_id,
+            false,
+            savedProgress
+                ? () => this.restoreReadingProgress(savedProgress)
+                : undefined,
+        );
     }
 
     loadChapter(
@@ -110,6 +159,7 @@ export class ReaderComponent implements OnInit, OnDestroy {
 
         this.router.navigate(['/read', this.bookId, chapterId], {
             replaceUrl: true,
+            queryParamsHandling: 'preserve',
         });
 
         this.readerService.getChapterContent(this.bookId, chapterId).subscribe({
@@ -120,10 +170,10 @@ export class ReaderComponent implements OnInit, OnDestroy {
                 requestAnimationFrame(() => {
                     if (this.bookContainer) {
                         const container = this.bookContainer.nativeElement;
-                        const pageWidth = container.clientWidth;
-                        const totalWidth = container.scrollWidth;
 
                         if (scrollToEnd) {
+                            const pageWidth = container.clientWidth;
+                            const totalWidth = container.scrollWidth;
                             const totalPages = Math.ceil(
                                 totalWidth / pageWidth,
                             );
@@ -138,6 +188,8 @@ export class ReaderComponent implements OnInit, OnDestroy {
                         if (onSuccess) {
                             // вызовется после рендера
                             onSuccess();
+                        } else {
+                            this.queueReadingProgressSave();
                         }
                     }
                 });
@@ -159,6 +211,7 @@ export class ReaderComponent implements OnInit, OnDestroy {
                 left: pageWidth + this.COLUMN_GAP,
                 behavior: 'smooth',
             });
+            this.queueReadingProgressSave();
         } else {
             this.goToNextChapter();
         }
@@ -173,6 +226,7 @@ export class ReaderComponent implements OnInit, OnDestroy {
                 left: -(pageWidth + this.COLUMN_GAP),
                 behavior: 'smooth',
             });
+            this.queueReadingProgressSave();
         } else {
             this.goToPrevChapter();
         }
@@ -252,6 +306,10 @@ export class ReaderComponent implements OnInit, OnDestroy {
         this.isSearchOpen = false;
     }
 
+    onReaderScroll() {
+        this.queueReadingProgressSave();
+    }
+
     private scrollToBlock(blockIndex: number) {
         setTimeout(() => {
             const container = this.bookContainer.nativeElement;
@@ -275,6 +333,7 @@ export class ReaderComponent implements OnInit, OnDestroy {
                 left: pageIndex * stride,
                 behavior: 'smooth',
             });
+            this.queueReadingProgressSave();
 
             targetEl.classList.add('search-hit-highlight');
 
@@ -282,6 +341,48 @@ export class ReaderComponent implements OnInit, OnDestroy {
                 targetEl.classList.remove('search-hit-highlight');
             }, 2500);
         }, 150);
+    }
+
+    private restoreReadingProgress(
+        progress:
+            | ReadingProgress
+            | { dataBlockIndex: number; scrollLeft?: number },
+    ) {
+        setTimeout(() => {
+            const container = this.bookContainer?.nativeElement;
+            if (!container) return;
+
+            const maxScrollLeft = Math.max(
+                0,
+                container.scrollWidth - container.clientWidth,
+            );
+
+            if (this.isServerReadingProgress(progress)) {
+                container.scrollLeft =
+                    Math.max(0, Math.min(progress.chapter_scroll_ratio, 1)) *
+                    maxScrollLeft;
+                return;
+            }
+
+            if (
+                progress.scrollLeft !== undefined &&
+                progress.scrollLeft >= 0 &&
+                progress.scrollLeft <= maxScrollLeft
+            ) {
+                container.scrollLeft = progress.scrollLeft;
+                return;
+            }
+
+            this.scrollToBlock(progress.dataBlockIndex);
+        }, 150);
+    }
+
+    private isServerReadingProgress(
+        progress:
+            | ReadingProgress
+            | { dataBlockIndex: number; scrollLeft?: number },
+    ): progress is ReadingProgress {
+        return 'data_block_index' in progress;
     }
 
     toggleSidebar() {
@@ -299,25 +400,216 @@ export class ReaderComponent implements OnInit, OnDestroy {
     }
 
     private getCurrentBlockIndex(): number | null {
+        return this.getCurrentReadingPosition()?.blockIndex ?? null;
+    }
+
+    private getCurrentReadingPosition(): {
+        blockIndex: number;
+        blockCharOffset: number;
+        chapterScrollRatio: number;
+    } | null {
         if (!this.bookContainer) return null;
 
         const container = this.bookContainer.nativeElement;
-        const blocks = Array.from(
-            container.querySelectorAll('[data-block-index]'),
-        ) as HTMLElement[];
+        const containerRect = container.getBoundingClientRect();
+        const target = this.findFirstVisibleBlock(container, containerRect);
 
-        if (blocks.length === 0) return null;
-
-        const scrollLeft = container.scrollLeft;
-        const tolerance = 5;
-
-        const firstVisible = blocks.find(
-            (el) => el.offsetLeft >= scrollLeft - tolerance,
-        );
-        const target = firstVisible ?? blocks[blocks.length - 1];
+        if (!target) return null;
 
         const raw = target.getAttribute('data-block-index');
-        return raw === null ? null : Number(raw);
+        if (raw === null) return null;
+
+        const blockIndex = Number(raw);
+        if (!Number.isFinite(blockIndex)) return null;
+
+        const maxScrollLeft = Math.max(
+            0,
+            container.scrollWidth - container.clientWidth,
+        );
+
+        return {
+            blockIndex,
+            blockCharOffset: this.findFirstVisibleCharOffset(
+                target,
+                containerRect,
+            ),
+            chapterScrollRatio:
+                maxScrollLeft > 0 ? container.scrollLeft / maxScrollLeft : 0,
+        };
+    }
+
+    private findFirstVisibleBlock(
+        container: HTMLElement,
+        containerRect: DOMRect,
+    ): HTMLElement | null {
+        const xStep = Math.max(24, Math.floor(containerRect.width / 12));
+        const yStep = 18;
+        const xStart = containerRect.left + 8;
+        const xEnd = containerRect.right - 8;
+        const yStart = containerRect.top + 8;
+        const yEnd = containerRect.bottom - 8;
+
+        for (let y = yStart; y <= yEnd; y += yStep) {
+            for (let x = xStart; x <= xEnd; x += xStep) {
+                const el = document.elementFromPoint(x, y);
+                const block = el?.closest?.('[data-block-index]');
+
+                if (block instanceof HTMLElement && container.contains(block)) {
+                    return block;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private findFirstVisibleCharOffset(
+        block: HTMLElement,
+        containerRect: DOMRect,
+    ): number {
+        const pointOffset = this.findTextOffsetAtPoint(block, containerRect);
+        if (pointOffset !== null) return pointOffset;
+
+        const textNodes = this.getTextNodes(block);
+        let blockOffset = 0;
+
+        for (const node of textNodes) {
+            const visibleOffset = this.findFirstVisibleOffsetInTextNode(
+                node,
+                containerRect,
+            );
+
+            if (visibleOffset !== null) {
+                return blockOffset + visibleOffset;
+            }
+
+            blockOffset += node.textContent?.length ?? 0;
+        }
+
+        return 0;
+    }
+
+    private findTextOffsetAtPoint(
+        block: HTMLElement,
+        containerRect: DOMRect,
+    ): number | null {
+        const doc = document as Document & {
+            caretPositionFromPoint?: (
+                x: number,
+                y: number,
+            ) => { offsetNode: Node; offset: number } | null;
+            caretRangeFromPoint?: (x: number, y: number) => Range | null;
+        };
+
+        const x = containerRect.left + 8;
+        const y = containerRect.top + 8;
+        let node: Node | null = null;
+        let offset: number | null = null;
+
+        const caretPosition = doc.caretPositionFromPoint?.(x, y);
+        if (caretPosition) {
+            node = caretPosition.offsetNode;
+            offset = caretPosition.offset;
+        } else {
+            const range = doc.caretRangeFromPoint?.(x, y);
+            if (range) {
+                node = range.startContainer;
+                offset = range.startOffset;
+            }
+        }
+
+        if (
+            !node ||
+            offset === null ||
+            node.nodeType !== Node.TEXT_NODE ||
+            !block.contains(node)
+        ) {
+            return null;
+        }
+
+        return this.getOffsetFromBlockStart(block, node as Text, offset);
+    }
+
+    private getOffsetFromBlockStart(
+        block: HTMLElement,
+        targetNode: Text,
+        targetOffset: number,
+    ): number {
+        let offset = 0;
+
+        for (const node of this.getTextNodes(block)) {
+            if (node === targetNode) {
+                return offset + targetOffset;
+            }
+
+            offset += node.textContent?.length ?? 0;
+        }
+
+        return 0;
+    }
+
+    private getTextNodes(root: Node): Text[] {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        const nodes: Text[] = [];
+
+        while (walker.nextNode()) {
+            const node = walker.currentNode as Text;
+            if (node.textContent?.trim()) {
+                nodes.push(node);
+            }
+        }
+
+        return nodes;
+    }
+
+    private findFirstVisibleOffsetInTextNode(
+        node: Text,
+        containerRect: DOMRect,
+    ): number | null {
+        const length = node.textContent?.length ?? 0;
+        const step = 16;
+
+        for (let offset = 0; offset < length; offset += step) {
+            if (!this.isTextOffsetVisible(node, offset, containerRect)) {
+                continue;
+            }
+
+            const start = Math.max(0, offset - step + 1);
+            for (let exact = start; exact <= offset; exact++) {
+                if (this.isTextOffsetVisible(node, exact, containerRect)) {
+                    return exact;
+                }
+            }
+
+            return offset;
+        }
+
+        return null;
+    }
+
+    private isTextOffsetVisible(
+        node: Text,
+        offset: number,
+        containerRect: DOMRect,
+    ): boolean {
+        if (!node.textContent || offset >= node.textContent.length) {
+            return false;
+        }
+
+        const range = document.createRange();
+        range.setStart(node, offset);
+        range.setEnd(node, Math.min(offset + 1, node.textContent.length));
+
+        const rects = Array.from(range.getClientRects());
+        range.detach();
+
+        return rects.some(
+            (rect) =>
+                rect.right > containerRect.left &&
+                rect.left < containerRect.right &&
+                rect.bottom > containerRect.top &&
+                rect.top < containerRect.bottom,
+        );
     }
 
     private findBookmarkAtCurrent(): Bookmark | undefined {
@@ -377,15 +669,57 @@ export class ReaderComponent implements OnInit, OnDestroy {
         this.isBookmarksPanelOpen = false;
     }
 
+    private queueReadingProgressSave() {
+        if (this.progressSaveTimer) {
+            clearTimeout(this.progressSaveTimer);
+        }
+
+        this.progressSaveTimer = setTimeout(() => {
+            this.saveReadingProgress();
+        }, this.SAVE_PROGRESS_DELAY_MS);
+    }
+
+    private saveReadingProgress() {
+        const position = this.getCurrentReadingPosition();
+        if (!position) return;
+
+        if (this.isAuthenticated()) {
+            this.readingProgress
+                .set({
+                    book_id: this.bookId,
+                    chapter_id: this.currentChapterId,
+                    data_block_index: position.blockIndex,
+                    block_char_offset: position.blockCharOffset,
+                    chapter_scroll_ratio: position.chapterScrollRatio,
+                })
+                .subscribe({ error: (err) => console.error(err) });
+        } else {
+            this.guestProgress.set({
+                bookId: this.bookId,
+                chapterId: this.currentChapterId,
+                dataBlockIndex: position.blockIndex,
+                scrollLeft: this.bookContainer.nativeElement.scrollLeft,
+            });
+        }
+    }
+
     @HostListener('window:keydown', ['$event'])
     handleKeyboard(event: KeyboardEvent) {
         if (event.key === 'ArrowRight') this.nextPage();
         if (event.key === 'ArrowLeft') this.prevPage();
     }
 
+    @HostListener('window:beforeunload')
+    handleBeforeUnload() {
+        this.saveReadingProgress();
+    }
+
     exitReader() {
-        this.router.navigate([''], {
-            replaceUrl: true,
-        });
+        this.router.navigateByUrl(
+            this.route.snapshot.queryParamMap.get('returnUrl') ?? '/',
+            {
+                replaceUrl: true,
+            },
+        );
     }
 }

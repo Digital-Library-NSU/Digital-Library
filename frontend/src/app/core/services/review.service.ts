@@ -29,8 +29,8 @@ export class ReviewService {
     upsertReview(
         bookId: number,
         body: CreateReviewRequest,
-    ): Observable<{ ok: true }> {
-        return this.api.post<{ ok: true }>(`/books/${bookId}/review`, body);
+    ): Observable<Review> {
+        return this.api.post<Review>(`/books/${bookId}/review`, body);
     }
 
     deleteReview(reviewId: number): Observable<{ ok: true }> {

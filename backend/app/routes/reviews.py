@@ -1,5 +1,7 @@
+from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from app.dtos.review import CreateReviewDTO, ReviewDTO
@@ -11,7 +13,7 @@ router = APIRouter(prefix="/books")
 
 
 @router.post("/{book_id}/review")
-async def create_review(
+async def upsert_review(
     book_id: int,
     dto: CreateReviewDTO,
     request: Request,
@@ -33,17 +35,17 @@ async def create_review(
 
         existing_review = result.scalar_one_or_none()
 
-        if existing_review is not None:
-            raise HTTPException(409, "Review already exists!")
+        if existing_review is None:
+            review = Review()
+            review.user_id = user.id
+            review.book_id = book_id
+            db_session.add(review)
+        else:
+            review = existing_review
+            review.updated_at = datetime.utcnow()
 
-        review = Review()
-
-        review.user_id = user.id
-        review.book_id = book_id
         review.rating = dto.rating
         review.review_text = dto.text
-
-        db_session.add(review)
 
         await db_session.commit()
         await db_session.refresh(review)
@@ -54,6 +56,7 @@ async def create_review(
             rating=review.rating,
             text=review.review_text,
             created_at=review.created_at,
+            updated_at=review.updated_at,
         )
 
 
@@ -85,6 +88,7 @@ async def get_my_review(
             rating=review.rating,
             text=review.review_text,
             created_at=review.created_at,
+            updated_at=review.updated_at,
         )
 
 
@@ -102,7 +106,7 @@ async def get_book_reviews(
             select(Review)
             .options(selectinload(Review.user))
             .where(Review.book_id == book_id)
-            .order_by(Review.created_at.desc())
+            .order_by(func.coalesce(Review.updated_at, Review.created_at).desc())
         )
 
         reviews = result.scalars().all()
@@ -114,6 +118,7 @@ async def get_book_reviews(
                 rating=review.rating,
                 text=review.review_text,
                 created_at=review.created_at,
+                updated_at=review.updated_at,
             )
             for review in reviews
         ]

@@ -4,6 +4,7 @@ export interface Review {
     rating: number;
     text: string;
     created_at: string;
+    updated_at: string | null;
 }
 
 export interface CreateReviewRequest {

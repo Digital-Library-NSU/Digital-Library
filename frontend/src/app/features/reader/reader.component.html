@@ -89,7 +89,8 @@
             @if (isLoading) {
             <div class="loading-state">Загрузка главы...</div>
             }
-            <div #bookContainer class="book-content" [style.font-size.px]="fontSize" [innerHTML]="safeContent">
+            <div #bookContainer class="book-content" [style.font-size.px]="fontSize" [innerHTML]="safeContent"
+                (scroll)="onReaderScroll()">
             </div>
 
         </div>

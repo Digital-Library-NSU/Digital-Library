@@ -125,15 +125,18 @@ docker compose down
 docker compose exec db psql -U libuser -d library -c "UPDATE users SET role = 'admin' WHERE login = 'admin'; SELECT id, login, role FROM users WHERE login = 'admin';"
 ```
 #### Массовый импорт книг
-Windows PowerShell
 
 ```powershell
-docker compose run --rm -v "${PWD}\books:/books:ro" backend python build_library_db.py  --root /books 
-```
+docker compose exec backend /bin/bash
 
-Linux / Git Bash
-
-```bash
-docker compose run --rm -v "$PWD/books:/books:ro" backend python build_library_db.py  --root /books 
+python build_library_db.py \
+  --root /books \
+  --dsn postgresql://libuser:libpass@db:5432/library \
+  --es-url http://elasticsearch:9200 \
+  --es-index-meta books_meta \
+  --es-index-content books_content \
+  --embed-model /models/bge-m3 \
+  --embed-device auto \
+  --max-missing-spine 1
 ```
 

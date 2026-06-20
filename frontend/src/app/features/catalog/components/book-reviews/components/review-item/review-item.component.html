@@ -3,7 +3,7 @@
     <header class="header">
         <div class="left">
             <span class="user-login">{{ currReview.user_login }}</span>
-            <span class="date">{{ currReview.created_at | date: 'd MMMM y' }}</span>
+            <span class="date">{{ (currReview.updated_at ?? currReview.created_at) | date: 'd MMMM y' }}</span>
         </div>
         <div class="rating">{{ currReview.rating }} / 10</div>
     </header>

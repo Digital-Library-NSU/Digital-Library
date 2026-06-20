@@ -221,6 +221,71 @@ def insert_paragraph_meta(
     )
 
 
+def delete_book_blocks(cur, book_id: int) -> None:
+    cur.execute(
+        "DELETE FROM content_blocks WHERE book_id = %s",
+        (book_id,),
+    )
+
+
+def insert_content_block(
+    cur,
+    book_id: int,
+    chapter_id: int,
+    block_index: int,
+    char_start: int,
+    char_end: int,
+    char_count: int,
+) -> None:
+    cur.execute(
+        """
+        INSERT INTO content_blocks
+          (book_id, chapter_id, block_index, char_start, char_end, char_count)
+        VALUES (%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (book_id, chapter_id, block_index) DO UPDATE
+        SET char_start = EXCLUDED.char_start,
+            char_end = EXCLUDED.char_end,
+            char_count = EXCLUDED.char_count
+        """,
+        (
+            book_id,
+            chapter_id,
+            block_index,
+            char_start,
+            char_end,
+            char_count,
+        ),
+    )
+
+
+def insert_chapter_blocks(
+    cur,
+    book_id: int,
+    chapter_id: int,
+    blocks: List[Any],
+    char_running: int,
+) -> int:
+    for block in blocks:
+        for segment in block.segments:
+            char_count = len(segment.text)
+            char_start = char_running
+            char_end = char_start + char_count
+
+            insert_content_block(
+                cur,
+                book_id,
+                chapter_id,
+                segment.block_index,
+                char_start,
+                char_end,
+                char_count,
+            )
+
+            char_running = char_end
+
+    return char_running
+
+
 def _fallback_book_title(file_path: Path, meta_title: Optional[str]) -> str:
     if meta_title and meta_title.strip():
         return meta_title
@@ -471,6 +536,7 @@ def process_epub(file_path: Path, args):
             with conn.cursor() as cur:
                 book_id = find_or_insert_book(
                     cur, meta, meta["subjects"], total_blocks_count)
+                delete_book_blocks(cur, book_id)
 
                 book_title_for_es = _fallback_book_title(
                     file_path, meta.get("title"))
@@ -490,6 +556,7 @@ def process_epub(file_path: Path, args):
                 meta_doc: Dict[str, Any] = {}
                 content_docs: List[Dict[str, Any]] = []
                 texts_for_embed: List[str] = []
+                chars_running = 0
                 words_running = 0
 
                 if not args.no_es:
@@ -520,6 +587,19 @@ def process_epub(file_path: Path, args):
                     blocks = payload["blocks"]
                     prefix = payload["prefix"]
                     wins = payload["wins"]
+
+                    if chapter_id is None:
+                        raise RuntimeError(
+                            f"Chapter id not found for book_id={book_id}, ord={c_idx}"
+                        )
+
+                    chars_running = insert_chapter_blocks(
+                        cur,
+                        book_id,
+                        chapter_id,
+                        blocks,
+                        chars_running,
+                    )
 
                     base_offset = words_running
 
