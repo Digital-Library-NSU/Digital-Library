@@ -51,6 +51,8 @@ async def set_reading_progress(request_dto: SetReadingProgressDTO,
 
         progress = int((absolute_char_pos / total_chars) * 100)
         progress = max(0, min(progress, 100))
+        if request_dto.is_completed:
+            progress = 100
 
         stmt = insert(t_reading_progress).values(
             user_id=user_id,

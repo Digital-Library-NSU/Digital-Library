@@ -150,7 +150,7 @@ def coalesce_short_paragraphs(blocks: List[TextBlock], min_words: int) -> List[T
     for block in blocks:
         w = len(tokenize_words(block.text))
 
-        if buf_w == 0:
+        if not buf_segments:
             buf_kind = block.kind
             buf_segments = list(block.segments)
             buf_w = w

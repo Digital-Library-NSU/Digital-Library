@@ -7,6 +7,7 @@ class SetReadingProgressDTO(BaseModel):
     data_block_index: int
     block_char_offset: int = 0
     chapter_scroll_ratio: float = 0
+    is_completed: bool = False
 
 
 class ReadingProgressDTO(BaseModel):

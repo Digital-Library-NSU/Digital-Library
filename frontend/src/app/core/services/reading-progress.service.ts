@@ -17,6 +17,7 @@ export interface SetReadingProgressRequest {
     data_block_index: number;
     block_char_offset: number;
     chapter_scroll_ratio: number;
+    is_completed?: boolean;
 }
 
 @Injectable({

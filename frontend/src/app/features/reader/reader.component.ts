@@ -63,6 +63,8 @@ export class ReaderComponent implements OnInit, OnDestroy {
     private readonly COLUMN_GAP = 80;
     private readonly SAVE_PROGRESS_DELAY_MS = 400;
     private progressSaveTimer: ReturnType<typeof setTimeout> | null = null;
+    private pendingPageScrollLeft: number | null = null;
+    private pendingPageScrollFrame: number | null = null;
 
     isSearchOpen = false;
     isSearching = false;
@@ -85,6 +87,9 @@ export class ReaderComponent implements OnInit, OnDestroy {
         if (this.progressSaveTimer) {
             clearTimeout(this.progressSaveTimer);
         }
+        if (this.pendingPageScrollFrame !== null) {
+            cancelAnimationFrame(this.pendingPageScrollFrame);
+        }
         this.bookmarkService.clear();
     }
 
@@ -99,6 +104,11 @@ export class ReaderComponent implements OnInit, OnDestroy {
     }
 
     private loadInitialChapter(initialChapterId: number | null) {
+        if (this.route.snapshot.queryParamMap.get('restart') === 'true') {
+            this.openInitialChapter(initialChapterId, null);
+            return;
+        }
+
         if (this.isAuthenticated()) {
             this.readingProgress.getAll().subscribe({
                 next: (items) => {
@@ -207,11 +217,7 @@ export class ReaderComponent implements OnInit, OnDestroy {
         const currentScroll = container.scrollLeft + pageWidth;
 
         if (currentScroll < container.scrollWidth - 10) {
-            container.scrollBy({
-                left: pageWidth + this.COLUMN_GAP,
-                behavior: 'smooth',
-            });
-            this.queueReadingProgressSave();
+            this.scrollToPage(container.scrollLeft + pageWidth + this.COLUMN_GAP);
         } else {
             this.goToNextChapter();
         }
@@ -222,11 +228,7 @@ export class ReaderComponent implements OnInit, OnDestroy {
         const pageWidth = container.clientWidth;
 
         if (container.scrollLeft > 0) {
-            container.scrollBy({
-                left: -(pageWidth + this.COLUMN_GAP),
-                behavior: 'smooth',
-            });
-            this.queueReadingProgressSave();
+            this.scrollToPage(container.scrollLeft - (pageWidth + this.COLUMN_GAP));
         } else {
             this.goToPrevChapter();
         }
@@ -442,25 +444,49 @@ export class ReaderComponent implements OnInit, OnDestroy {
         container: HTMLElement,
         containerRect: DOMRect,
     ): HTMLElement | null {
-        const xStep = Math.max(24, Math.floor(containerRect.width / 12));
-        const yStep = 18;
-        const xStart = containerRect.left + 8;
-        const xEnd = containerRect.right - 8;
         const yStart = containerRect.top + 8;
         const yEnd = containerRect.bottom - 8;
 
-        for (let y = yStart; y <= yEnd; y += yStep) {
-            for (let x = xStart; x <= xEnd; x += xStep) {
-                const el = document.elementFromPoint(x, y);
-                const block = el?.closest?.('[data-block-index]');
+        const primaryXPositions = [
+            containerRect.left + 16,
+            containerRect.left + containerRect.width * 0.25,
+            containerRect.left + containerRect.width * 0.5,
+            containerRect.left + containerRect.width * 0.75,
+            containerRect.right - 16,
+        ];
 
-                if (block instanceof HTMLElement && container.contains(block)) {
-                    return block;
-                }
+        for (let y = yStart; y <= yEnd; y += 6) {
+            for (const x of primaryXPositions) {
+                const block = this.blockFromPoint(x, y, container);
+                if (block) return block;
+            }
+        }
+
+        const xStart = containerRect.left + 8;
+        const xEnd = containerRect.right - 8;
+        const xStep = Math.max(12, Math.floor(containerRect.width / 24));
+
+        for (let y = yStart; y <= yEnd; y += 8) {
+            for (let x = xStart; x <= xEnd; x += xStep) {
+                const block = this.blockFromPoint(x, y, container);
+                if (block) return block;
             }
         }
 
         return null;
+    }
+
+    private blockFromPoint(
+        x: number,
+        y: number,
+        container: HTMLElement,
+    ): HTMLElement | null {
+        const el = document.elementFromPoint(x, y);
+        const block = el?.closest?.('[data-block-index]');
+
+        return block instanceof HTMLElement && container.contains(block)
+            ? block
+            : null;
     }
 
     private findFirstVisibleCharOffset(
@@ -670,6 +696,8 @@ export class ReaderComponent implements OnInit, OnDestroy {
     }
 
     private queueReadingProgressSave() {
+        if (this.pendingPageScrollLeft !== null) return;
+
         if (this.progressSaveTimer) {
             clearTimeout(this.progressSaveTimer);
         }
@@ -679,19 +707,77 @@ export class ReaderComponent implements OnInit, OnDestroy {
         }, this.SAVE_PROGRESS_DELAY_MS);
     }
 
+    private scrollToPage(targetScrollLeft: number) {
+        const container = this.bookContainer.nativeElement;
+        const maxScrollLeft = Math.max(
+            0,
+            container.scrollWidth - container.clientWidth,
+        );
+        const target = Math.max(0, Math.min(targetScrollLeft, maxScrollLeft));
+
+        this.pendingPageScrollLeft = target;
+
+        if (this.progressSaveTimer) {
+            clearTimeout(this.progressSaveTimer);
+            this.progressSaveTimer = null;
+        }
+        if (this.pendingPageScrollFrame !== null) {
+            cancelAnimationFrame(this.pendingPageScrollFrame);
+        }
+
+        container.scrollTo({
+            left: target,
+            behavior: 'smooth',
+        });
+
+        this.waitForPageScrollToSettle(target, container.scrollLeft, 0);
+    }
+
+    private waitForPageScrollToSettle(
+        target: number,
+        lastScrollLeft: number,
+        stableFrames: number,
+    ) {
+        this.pendingPageScrollFrame = requestAnimationFrame(() => {
+            const container = this.bookContainer?.nativeElement;
+            if (!container) return;
+
+            const current = container.scrollLeft;
+            const reachedTarget = Math.abs(current - target) <= 2;
+            const stopped = Math.abs(current - lastScrollLeft) <= 0.5;
+            const nextStableFrames = stopped ? stableFrames + 1 : 0;
+
+            if (reachedTarget || nextStableFrames >= 6) {
+                this.pendingPageScrollLeft = null;
+                this.pendingPageScrollFrame = null;
+                this.saveReadingProgress();
+                return;
+            }
+
+            this.waitForPageScrollToSettle(target, current, nextStableFrames);
+        });
+    }
+
     private saveReadingProgress() {
         const position = this.getCurrentReadingPosition();
-        if (!position) return;
+        const container = this.bookContainer?.nativeElement;
+
+        if (!position) {
+            return;
+        }
 
         if (this.isAuthenticated()) {
+            const payload = {
+                book_id: this.bookId,
+                chapter_id: this.currentChapterId,
+                data_block_index: position.blockIndex,
+                block_char_offset: position.blockCharOffset,
+                chapter_scroll_ratio: position.chapterScrollRatio,
+                is_completed: this.isAtEndOfBook(),
+            };
+
             this.readingProgress
-                .set({
-                    book_id: this.bookId,
-                    chapter_id: this.currentChapterId,
-                    data_block_index: position.blockIndex,
-                    block_char_offset: position.blockCharOffset,
-                    chapter_scroll_ratio: position.chapterScrollRatio,
-                })
+                .set(payload)
                 .subscribe({ error: (err) => console.error(err) });
         } else {
             this.guestProgress.set({
@@ -701,6 +787,21 @@ export class ReaderComponent implements OnInit, OnDestroy {
                 scrollLeft: this.bookContainer.nativeElement.scrollLeft,
             });
         }
+    }
+
+    private isAtEndOfBook(): boolean {
+        const container = this.bookContainer?.nativeElement;
+        if (!container) return false;
+
+        const isLastChapter =
+            this.currentChapterIndex === this.chaptersList.chapters.length - 1;
+        const maxScrollLeft = Math.max(
+            0,
+            container.scrollWidth - container.clientWidth,
+        );
+        const isLastPage = container.scrollLeft >= maxScrollLeft - 2;
+
+        return isLastChapter && isLastPage;
     }
 
     @HostListener('window:keydown', ['$event'])

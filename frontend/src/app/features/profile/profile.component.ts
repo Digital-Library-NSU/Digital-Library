@@ -122,7 +122,10 @@ export class ProfileComponent implements OnInit {
 
     rereadBook(item: ProfileReadingBook) {
         this.router.navigate(['/read', item.book.book_id, 1], {
-            queryParams: { returnUrl: this.getProfileReturnUrl() },
+            queryParams: {
+                returnUrl: this.getProfileReturnUrl(),
+                restart: true,
+            },
         });
     }
 
@@ -133,7 +136,10 @@ export class ProfileComponent implements OnInit {
                 : 1;
 
         this.router.navigate(['/read', item.book.book_id, chapterId], {
-            queryParams: { returnUrl: this.getProfileReturnUrl() },
+            queryParams: {
+                returnUrl: this.getProfileReturnUrl(),
+                restart: item.progress !== null && item.progress >= 100,
+            },
         });
     }
 
