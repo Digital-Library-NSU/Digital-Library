@@ -29,6 +29,8 @@ class Book(Base):
     pub_date: Mapped[Optional[datetime.date]] = mapped_column(Date)
     subjects: Mapped[Optional[list[str]]] = mapped_column(ARRAY(Text()))
     series: Mapped[Optional[str]] = mapped_column(Text)
+    added_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, server_default=text('now()'))
 
     chapters: Mapped[list['Chapter']] = relationship(
         'Chapter', back_populates='book')
@@ -274,6 +276,7 @@ t_reading_progress = Table(
     Column('curr_block_char_offset', Integer, nullable=False, server_default=text('0')),
     Column('chapter_scroll_ratio', Float, nullable=False, server_default=text('0')),
     Column('progress', Integer, nullable=False),
+    Column('updated_at', DateTime, nullable=False, server_default=text('now()')),
     CheckConstraint(
         'curr_block_char_offset >= 0',
         name='reading_progress_curr_block_char_offset_check'),

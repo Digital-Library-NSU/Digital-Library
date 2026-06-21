@@ -2,7 +2,10 @@ import { CommonModule } from '@angular/common';
 import { Component, inject } from '@angular/core';
 import { BookCardComponent } from './components/book-card/book-card.component';
 import { Book, BookCard, SearchHit } from '../../shared/models/book.model';
-import { BookDataService } from '../../core/services/book-data.service';
+import {
+    BookDataService,
+    BooksSortMode,
+} from '../../core/services/book-data.service';
 import { finalize } from 'rxjs/operators';
 import { BookDetailsModalComponent } from './components/book-details-modal/book-details-modal.component';
 import { UploadBookModalComponent } from './components/upload-book-modal/upload-book-modal.component';
@@ -26,8 +29,10 @@ import { AuthService } from '../../core/services/auth.service';
 export class CatalogComponent {
     private bookService = inject(BookDataService);
     private auth = inject(AuthService);
+    private readonly sortModeStorageKey = 'catalogSortMode';
 
     readonly isAdmin = this.auth.isAdmin;
+    readonly isAuthenticated = this.auth.isAuthenticated;
 
     books: BookCard[] = [];
     isLoading = true;
@@ -41,17 +46,36 @@ export class CatalogComponent {
 
     limit = 12;
     offset = 0;
+    sortMode: BooksSortMode = this.getStoredSortMode();
+
+    get sortOptions(): { value: BooksSortMode; label: string }[] {
+        const options: { value: BooksSortMode; label: string }[] = [
+            { value: 'popular', label: 'Сначала популярные' },
+            { value: 'new', label: 'Сначала новые' },
+        ];
+
+        if (this.isAuthenticated()) {
+            options.push({ value: 'recommended', label: 'Рекомендации' });
+        }
+
+        return options;
+    }
 
     ngOnInit() {
         this.loadBooks();
     }
 
     loadBooks() {
+        if (this.sortMode === 'recommended' && !this.isAuthenticated()) {
+            this.sortMode = 'popular';
+            this.storeSortMode(this.sortMode);
+        }
+
         this.isLoading = true;
         this.error = '';
 
         this.bookService
-            .getAllBooks(this.limit, this.offset)
+            .getAllBooks(this.limit, this.offset, this.sortMode)
             .pipe(finalize(() => (this.isLoading = false)))
             .subscribe({
                 next: (response) => {
@@ -62,6 +86,34 @@ export class CatalogComponent {
                     this.error = 'Failed to load books';
                 },
             });
+    }
+
+    onSortModeChanged(value: string) {
+        const nextMode = value as BooksSortMode;
+        if (nextMode === 'recommended' && !this.isAuthenticated()) return;
+
+        this.sortMode = nextMode;
+        this.storeSortMode(nextMode);
+        this.offset = 0;
+        this.loadBooks();
+    }
+
+    private getStoredSortMode(): BooksSortMode {
+        const stored = sessionStorage.getItem(this.sortModeStorageKey);
+
+        if (
+            stored === 'popular' ||
+            stored === 'new' ||
+            stored === 'recommended'
+        ) {
+            return stored;
+        }
+
+        return 'popular';
+    }
+
+    private storeSortMode(mode: BooksSortMode) {
+        sessionStorage.setItem(this.sortModeStorageKey, mode);
     }
 
     onSearchResults(data: { hits: SearchHit[]; total: number }) {

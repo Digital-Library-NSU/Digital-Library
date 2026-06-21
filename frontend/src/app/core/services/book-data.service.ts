@@ -5,6 +5,8 @@ import { Book, BookCard, SearchResponse } from '../../shared/models/book.model';
 import { environment } from '../../../environments/environment';
 import { HttpClient } from '@angular/common/http';
 
+export type BooksSortMode = 'popular' | 'new' | 'recommended';
+
 @Injectable({
     providedIn: 'root',
 })
@@ -15,9 +17,10 @@ export class BookDataService {
 
     getAllBooks(
         limit: number = 10,
-        offset: number = 0
+        offset: number = 0,
+        sort: BooksSortMode = 'popular',
     ): Observable<BookCard[]> {
-        return this.api.get<BookCard[]>('/books/all', { limit, offset });
+        return this.api.get<BookCard[]>('/books/all', { limit, offset, sort });
     }
 
     getBookById(id: number): Observable<Book> {

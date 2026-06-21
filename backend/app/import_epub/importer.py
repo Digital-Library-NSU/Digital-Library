@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
+import numpy as np
 import torch
 from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer
@@ -23,6 +24,26 @@ from .text_utils import (build_window_content_and_offsets,
 _ENCODER_CACHE: Dict[Tuple[str, str],
                      Tuple[SentenceTransformer, Optional[int], str]] = {}
 _ES_DIM_ENSURED: Dict[Tuple[str, str, str, int], bool] = {}
+
+
+def book_vector_from_window_embeddings(
+    embeddings: "np.ndarray",
+    step: int = 2,
+) -> Optional[List[float]]:
+    if embeddings.size == 0:
+        return None
+
+    selected = embeddings[:: max(1, step)]
+    if selected.size == 0:
+        return None
+
+    book_vec = selected.mean(axis=0)
+    norm = np.linalg.norm(book_vec)
+
+    if norm <= 0:
+        return None
+
+    return (book_vec / norm).astype(float).tolist()
 
 # ---------- Embedding helpers ----------
 
@@ -685,7 +706,7 @@ def process_epub(file_path: Path, args):
                             args.embed_model, enc_dev)
 
                     batch = args.embed_batch_size
-                    vecs: List[List[float]] = []
+                    vec_batches: List[np.ndarray] = []
 
                     if torch is not None and hasattr(torch, "inference_mode"):
                         ctx = torch.inference_mode
@@ -700,17 +721,31 @@ def process_epub(file_path: Path, args):
                                 normalize_embeddings=not args.no_embed_normalize,
                                 convert_to_numpy=True,
                             )
-                            vecs.extend(embs.tolist())
+                            vec_batches.append(embs)
 
-                    if len(vecs) != len(content_docs):
+                    embeddings = (
+                        np.vstack(vec_batches)
+                        if vec_batches
+                        else np.empty((0, dense_vec_dim), dtype=np.float32)
+                    )
+
+                    if len(embeddings) != len(content_docs):
                         raise RuntimeError(
                             f"Embedding count mismatch: vecs={
-                                len(vecs)}, content_docs={
+                                len(embeddings)}, content_docs={
                                 len(content_docs)}"
                         )
 
-                    for d, vec in zip(content_docs, vecs):
-                        d["content_vec"] = vec
+                    for d, vec in zip(content_docs, embeddings):
+                        d["content_vec"] = vec.astype(float).tolist()
+
+                    if meta_doc:
+                        book_vec = book_vector_from_window_embeddings(
+                            embeddings,
+                            step=2,
+                        )
+                        if book_vec is not None:
+                            meta_doc["book_vec"] = book_vec
 
                 if not args.no_es:
                     ensure_es_indices(
