@@ -3,6 +3,7 @@
     max-width: 1200px;
     margin: 0 auto;
     min-height: 90vh;
+    position: relative;
 }
 
 h1,
@@ -40,6 +41,42 @@ div {
             color: white;
             border-color: var(--primary-text-color);
         }
+    }
+}
+
+.catalog-content {
+    position: relative;
+}
+
+.catalog-filter {
+    position: absolute;
+    top: 0;
+    right: calc(100% + 2rem);
+    width: 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+    background: rgba(255, 255, 255, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 8px;
+    backdrop-filter: blur(10px);
+
+    label {
+        font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+        color: var(--primary-text-color);
+        font-size: 0.95rem;
+    }
+
+    select {
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid rgba(68, 45, 30, 0.25);
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.85);
+        color: #333;
+        font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+        cursor: pointer;
     }
 }
 
@@ -99,4 +136,12 @@ div {
     color: #95a5a6;
     font-size: 1.2rem;
     margin-top: 3rem;
+}
+
+@media (max-width: 800px) {
+    .catalog-filter {
+        position: static;
+        width: auto;
+        margin-bottom: 1rem;
+    }
 }

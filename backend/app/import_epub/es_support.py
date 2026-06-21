@@ -100,6 +100,13 @@ def ensure_es_indices(
                 },
             },
         }
+        if dense_vec_dim and dense_vec_dim > 0:
+            base["properties"]["book_vec"] = {
+                "type": "dense_vector",
+                "dims": dense_vec_dim,
+                "index": True,
+                "similarity": "cosine",
+            }
         if enable_suggest:
             base["properties"]["title_suggest"] = {
                 "type": "completion",

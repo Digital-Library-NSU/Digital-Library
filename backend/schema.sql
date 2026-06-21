@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS books (
   pub_date              DATE,
   subjects              TEXT[],
   series                TEXT,
-  total_blocks_count    INT NOT NULL
+  total_blocks_count    INT NOT NULL,
+  added_at              TIMESTAMP NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS chapters (
@@ -116,7 +117,23 @@ CREATE TABLE IF NOT EXISTS reading_progress (
     curr_block_char_offset  INT NOT NULL DEFAULT 0,
     chapter_scroll_ratio    DOUBLE PRECISION NOT NULL DEFAULT 0,
     progress                INT NOT NULL CHECK (progress BETWEEN 0 AND 100),
+    updated_at              TIMESTAMP NOT NULL DEFAULT now(),
     CHECK (curr_block_char_offset >= 0),
     CHECK (chapter_scroll_ratio >= 0 AND chapter_scroll_ratio <= 1),
     UNIQUE (user_id, book_id)
 );
+
+CREATE OR REPLACE FUNCTION set_reading_progress_updated_at()
+RETURNS trigger AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_reading_progress_updated_at ON reading_progress;
+
+CREATE TRIGGER trg_reading_progress_updated_at
+BEFORE UPDATE ON reading_progress
+FOR EACH ROW
+EXECUTE FUNCTION set_reading_progress_updated_at();

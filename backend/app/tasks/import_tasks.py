@@ -2,6 +2,8 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any, Dict
 
+from celery.signals import worker_process_init
+
 from app.celery_app import celery_app
 from app.config import (
     PG_DSN,
@@ -13,7 +15,20 @@ from app.config import (
     EMBED_NORMALIZE,
     MAX_MISSING_SPINE,
 )
+from app.import_epub.importer import get_encoder, get_encoder_dim
 from app.import_epub import process_epub
+
+
+@worker_process_init.connect
+def warm_import_encoder(**_kwargs) -> None:
+    if not EMBED_MODEL:
+        return
+
+    try:
+        _encoder, device = get_encoder(EMBED_MODEL, device_mode=EMBED_DEVICE)
+        get_encoder_dim(EMBED_MODEL, device)
+    except Exception as exc:
+        print(f"[WARN] Cannot preload import embedding model: {exc}")
 
 
 def _build_import_args() -> Namespace:

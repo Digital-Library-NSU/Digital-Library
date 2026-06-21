@@ -36,17 +36,34 @@
     }
 
     @if (!isLoading && !error) {
-    @if (books.length > 0) {
-    <div class="books-grid">
-        @for (book of books; track book.book_id) {
-        <app-book-card [book]="book" (details)="openBookDetails($event)"></app-book-card>
+    <div class="catalog-content">
+        <aside class="catalog-filter">
+            <label for="book-sort">Режим</label>
+            <select
+                id="book-sort"
+                [value]="sortMode"
+                (change)="onSortModeChanged($any($event.target).value)"
+            >
+                @for (option of sortOptions; track option.value) {
+                <option [value]="option.value" [selected]="option.value === sortMode">
+                    {{ option.label }}
+                </option>
+                }
+            </select>
+        </aside>
+
+        @if (books.length > 0) {
+        <div class="books-grid">
+            @for (book of books; track book.book_id) {
+            <app-book-card [book]="book" (details)="openBookDetails($event)"></app-book-card>
+            }
+        </div>
+        } @else {
+        <div class="empty-state">
+            <p>Архивы пусты.</p>
+        </div>
         }
     </div>
-    } @else {
-    <div class="empty-state">
-        <p>Архивы пусты.</p>
-    </div>
-    }
     }
     }
 
