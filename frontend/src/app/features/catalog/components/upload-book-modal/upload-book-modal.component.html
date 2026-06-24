@@ -4,7 +4,6 @@
 
         <h2>Загрузка новой книги</h2>
 
-        @if (!isSuccess) {
         <div class="upload-form">
             <input type="file" id="fileInput" class="hidden-input" accept=".epub" (change)="onFileSelected($event)"
                 [disabled]="isUploading">
@@ -40,21 +39,11 @@
 
             <button class="upload-btn" [disabled]="!selectedFile || isUploading" (click)="upload()">
                 @if (isUploading) {
-                Загрузка...
+                Отправляем...
                 } @else {
                 Загрузить книгу
                 }
             </button>
         </div>
-        }
-
-        @if (isSuccess) {
-        <div class="success-state">
-            <div class="check-icon">✓</div>
-            <h3>Success!</h3>
-            <p>Книга успешно загружена.</p>
-            <button class="upload-btn success" (click)="closeModal()">Закрыть</button>
-        </div>
-        }
     </div>
 </div>

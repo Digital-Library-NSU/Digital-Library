@@ -121,7 +121,7 @@ services:
       UPLOAD_TMP_DIR: /tmp/library_uploads
 
       EMBED_MODEL: /models/bge-m3
-      EMBED_DEVICE: auto
+      EMBED_DEVICE: cpu
       EMBED_NORMALIZE: "true"
       MAX_MISSING_SPINE: "1"
     volumes:
@@ -129,11 +129,11 @@ services:
       - ./models:/models:ro
       - upload_tmp:/tmp/library_uploads
       - ./books:/books:ro
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
 
   celery:
     image: digital-library-backend:dev
-    container_name: library-celery
+    container_name: library-celery-import
     build:
       context: ./backend
       args:
@@ -156,6 +156,7 @@ services:
         condition: service_started
     environment:
       PYTHONUNBUFFERED: "1"
+      CELERY_WORKER_ROLE: import
 
       PG_DSN: postgresql://libuser:libpass@db:5432/library
 
@@ -186,7 +187,32 @@ services:
       - ./models:/models:ro
       - upload_tmp:/tmp/library_uploads
       - ./books:/books:ro
-    command: celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=1
+    command: celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=1 -Q imports -n import@%h
+
+  celery-email:
+    image: digital-library-backend:dev
+    container_name: library-celery-email
+    build:
+      context: ./backend
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PYTHONUNBUFFERED: "1"
+      CELERY_WORKER_ROLE: notifications
+
+      PG_DSN: postgresql://libuser:libpass@db:5432/library
+
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+    command: celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=1 -Q notifications -n notifications@%h
 
   frontend:
     image: digital-library-frontend:dev

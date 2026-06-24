@@ -1,20 +1,22 @@
 from pathlib import Path
 from uuid import uuid4
 import asyncio
-import datetime
-from typing import Literal
+import json
+from typing import Any, Literal
 from celery.result import AsyncResult
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
+import redis
 from sqlalchemy import func, select
 
 from app.celery_app import celery_app
-from app.config import IDX_META, UPLOAD_TMP_DIR
+from app.config import CELERY_RESULT_BACKEND, IDX_CONTENT, IDX_META, UPLOAD_TMP_DIR
 from app.dtos.books_dtos import (
     BookCardDto,
     BookDto,
     UploadBookResponseDto,
     ImportTaskStatusDto,
+    CancelImportResponseDto,
 )
 from app.integrations.database import get_db_session
 from app.integrations.elasticsearch import es_post
@@ -25,9 +27,14 @@ from app.utils.auth import get_user_id
 
 router = APIRouter(prefix="/books")
 
+IMPORT_TASK_META_TTL_SECONDS = 60 * 60 * 24
+
 RECOMMENDATION_SOURCE_LIMIT = 5
 RECOMMENDATION_CANDIDATE_POOL_SIZE = 50
 RECOMMENDATION_MIN_SEMANTIC_SCORE = 0.75
+RECOMMENDATION_RELATIVE_SCORE_RATIO = 0.95
+RECOMMENDATION_GAP_CUTOFF = 0.04
+RECOMMENDATION_CONTENT_POOL_SIZE = 300
 
 
 async def _get_cover_path(book_id: int) -> str | None:
@@ -139,75 +146,262 @@ async def _book_cards_by_ids(book_ids: list[int]) -> list[BookCardDto]:
     return result
 
 
-async def _rerank_recommendations(
+def _normalize_terms(values: list[str] | None) -> set[str]:
+    if not values:
+        return set()
+
+    return {
+        value.strip().lower()
+        for value in values
+        if value and value.strip()
+    }
+
+
+def _filter_recommendation_candidates(
     candidates: list[tuple[int, float]],
-) -> list[int]:
+) -> list[tuple[int, float]]:
     if not candidates:
         return []
 
-    book_ids = [book_id for book_id, _score in candidates]
+    sorted_candidates = sorted(candidates, key=lambda item: item[1], reverse=True)
+    best_score = sorted_candidates[0][1]
+    relative_threshold = best_score * RECOMMENDATION_RELATIVE_SCORE_RATIO
+
+    filtered: list[tuple[int, float]] = []
+    previous_score: float | None = None
+
+    for book_id, score in sorted_candidates:
+        if score < relative_threshold:
+            break
+
+        if (
+            previous_score is not None
+            and previous_score - score > RECOMMENDATION_GAP_CUTOFF
+        ):
+            break
+
+        filtered.append((book_id, score))
+        previous_score = score
+
+    return filtered
+
+
+async def _recommendation_metadata_scores(
+    source_book_ids: list[int],
+    candidate_ids: list[int],
+) -> dict[int, dict[str, float | str]]:
+    all_book_ids = sorted(set(source_book_ids + candidate_ids))
 
     async with get_db_session() as db_session:
         stmt = (
             select(
                 Book.id,
-                Book.added_at,
-                func.avg(Review.rating).label("avg_rating"),
-                func.count(Review.id).label("reviews_count"),
+                Book.title,
+                Book.authors,
+                Book.subjects,
             )
-            .outerjoin(Review, Review.book_id == Book.id)
-            .where(Book.id.in_(book_ids))
-            .group_by(Book.id)
+            .where(Book.id.in_(all_book_ids))
         )
         rows = (await db_session.execute(stmt)).all()
 
-    stats_by_id = {
+    meta_by_id: dict[int, dict[str, Any]] = {
         int(row.id): {
-            "added_at": row.added_at,
-            "avg_rating": float(row.avg_rating) if row.avg_rating is not None else None,
-            "reviews_count": int(row.reviews_count),
+            "title": row.title,
+            "authors": _normalize_terms(row.authors),
+            "subjects": _normalize_terms(row.subjects),
         }
         for row in rows
     }
 
-    max_semantic_score = max((score for _book_id, score in candidates), default=0.0)
-    now = datetime.datetime.utcnow()
-
-    scored_ids: list[tuple[int, float]] = []
-    for book_id, semantic_score in candidates:
-        stats = stats_by_id.get(book_id)
-        if stats is None:
+    source_authors: set[str] = set()
+    source_subjects: set[str] = set()
+    for book_id in source_book_ids:
+        source_meta = meta_by_id.get(book_id)
+        if not source_meta:
             continue
 
-        semantic_norm = (
-            semantic_score / max_semantic_score
-            if max_semantic_score > 0
+        source_authors.update(source_meta["authors"])
+        source_subjects.update(source_meta["subjects"])
+
+    scores: dict[int, dict[str, float | str]] = {}
+    for book_id in candidate_ids:
+        candidate_meta = meta_by_id.get(book_id)
+        if not candidate_meta:
+            continue
+
+        candidate_authors = candidate_meta["authors"]
+        candidate_subjects = candidate_meta["subjects"]
+        author_score = 1.0 if source_authors & candidate_authors else 0.0
+        subject_union = source_subjects | candidate_subjects
+        subject_score = (
+            len(source_subjects & candidate_subjects) / len(subject_union)
+            if subject_union
             else 0.0
         )
-        rating_score = (
-            stats["avg_rating"] / 10.0
-            if stats["avg_rating"] is not None
+
+        scores[book_id] = {
+            "title": str(candidate_meta["title"]),
+            "author_score": author_score,
+            "subject_score": subject_score,
+            "meta_score": author_score * 0.80 + subject_score * 0.20,
+        }
+
+    return scores
+
+
+async def _content_scores_for_recommendations(
+    user_vec: list[float],
+    candidate_ids: list[int],
+    excluded_book_ids: list[int],
+) -> dict[int, dict[str, float]]:
+    if not candidate_ids:
+        return {}
+
+    content_pool_size = max(
+        RECOMMENDATION_CONTENT_POOL_SIZE,
+        len(candidate_ids) * 20,
+    )
+    res = await es_post(
+        f"{IDX_CONTENT}/_search",
+        {
+            "size": content_pool_size,
+            "knn": {
+                "field": "content_vec",
+                "query_vector": user_vec,
+                "k": content_pool_size,
+                "num_candidates": max(500, content_pool_size * 10),
+                "filter": {
+                    "bool": {
+                        "filter": [
+                            {
+                                "terms": {
+                                    "book_id": [
+                                        str(book_id)
+                                        for book_id in candidate_ids
+                                    ]
+                                }
+                            }
+                        ],
+                        "must_not": [
+                            {
+                                "terms": {
+                                    "book_id": [
+                                        str(book_id)
+                                        for book_id in excluded_book_ids
+                                    ]
+                                }
+                            }
+                        ],
+                    }
+                },
+            },
+            "_source": ["book_id"],
+        },
+    )
+
+    scores: dict[int, dict[str, float]] = {}
+    for hit in res.get("hits", {}).get("hits", []):
+        try:
+            book_id = int(hit.get("_source", {}).get("book_id"))
+        except Exception:
+            continue
+
+        score = float(hit.get("_score") or 0.0)
+        current = scores.setdefault(
+            book_id,
+            {
+                "max_score": 0.0,
+                "sum_score": 0.0,
+                "hits_count": 0.0,
+            },
+        )
+        current["max_score"] = max(current["max_score"], score)
+        current["sum_score"] += score
+        current["hits_count"] += 1.0
+
+    return scores
+
+
+async def _rank_recommendations_semantically(
+    user_vec: list[float],
+    candidates: list[tuple[int, float]],
+    excluded_book_ids: list[int],
+    source_book_ids: list[int],
+) -> list[int]:
+    filtered_candidates = _filter_recommendation_candidates(candidates)
+    if not filtered_candidates:
+        return []
+
+    candidate_ids = [book_id for book_id, _score in filtered_candidates]
+    metadata_scores, content_scores = await asyncio.gather(
+        _recommendation_metadata_scores(source_book_ids, candidate_ids),
+        _content_scores_for_recommendations(
+            user_vec,
+            candidate_ids,
+            excluded_book_ids,
+        ),
+    )
+
+    if not content_scores:
+        return candidate_ids
+
+    max_book_score = max(score for _book_id, score in filtered_candidates)
+    max_content_score = max(
+        score["max_score"]
+        for score in content_scores.values()
+    )
+    max_hits_count = max(
+        score["hits_count"]
+        for score in content_scores.values()
+    )
+
+    ranked: list[tuple[int, float]] = []
+    for book_id, book_score in filtered_candidates:
+        content_score = content_scores.get(book_id)
+        if content_score is None:
+            continue
+
+        metadata_score = metadata_scores.get(book_id, {})
+        book_norm = book_score / max_book_score if max_book_score > 0 else 0.0
+        content_norm = (
+            content_score["max_score"] / max_content_score
+            if max_content_score > 0
             else 0.0
         )
-        review_score = min(stats["reviews_count"], 10) / 10.0
-
-        added_at = stats["added_at"]
-        if added_at is not None:
-            age_days = max(0, (now - added_at).days)
-            freshness_score = 1.0 / (1.0 + age_days / 365.0)
-        else:
-            freshness_score = 0.0
-
+        content_hits_norm = (
+            content_score["hits_count"] / max_hits_count
+            if max_hits_count > 0
+            else 0.0
+        )
+        meta_score = float(metadata_score.get("meta_score", 0.0))
         final_score = (
-            semantic_norm * 0.80
-            + rating_score * 0.12
-            + review_score * 0.05
-            + freshness_score * 0.03
+            book_norm * 0.35
+            + content_norm * 0.40
+            + content_hits_norm * 0.10
+            + meta_score * 0.15
         )
-        scored_ids.append((book_id, final_score))
+        ranked.append((book_id, final_score))
 
-    scored_ids.sort(key=lambda item: item[1], reverse=True)
-    return [book_id for book_id, _score in scored_ids]
+        print(
+            "[recommendations:score] "
+            f"book_id={book_id} "
+            f"title={metadata_score.get('title', '')!r} "
+            f"book_score={book_score:.6f} "
+            f"book_norm={book_norm:.6f} "
+            f"content_max_score={content_score['max_score']:.6f} "
+            f"content_hits={int(content_score['hits_count'])} "
+            f"content_norm={content_norm:.6f} "
+            f"content_hits_norm={content_hits_norm:.6f} "
+            f"meta_score={meta_score:.6f} "
+            f"final_score={final_score:.6f}"
+        )
+
+    ranked.sort(key=lambda item: item[1], reverse=True)
+    print(
+        "[recommendations:score] "
+        f"ranked_ids={[book_id for book_id, _score in ranked]}"
+    )
+    return [book_id for book_id, _score in ranked]
 
 
 async def _get_recommended_books(
@@ -290,7 +484,12 @@ async def _get_recommended_books(
 
         candidates.append((book_id, float(hit.get("_score") or 0.0)))
 
-    recommended_ids = await _rerank_recommendations(candidates)
+    recommended_ids = await _rank_recommendations_semantically(
+        user_vec,
+        candidates,
+        excluded_book_ids,
+        source_book_ids,
+    )
     return await _book_cards_by_ids(recommended_ids[offset : offset + page_limit])
 
 
@@ -423,17 +622,130 @@ async def upload_book(file: UploadFile = File(...)) -> UploadBookResponseDto:
         str(tmp_path),
         safe_name,
     )
+    _save_import_task_meta(
+        task.id,
+        {
+            "filename": safe_name,
+            "tmp_path": str(tmp_path),
+        },
+    )
 
     return UploadBookResponseDto(
         task_id=task.id,
         status="queued",
+        filename=safe_name,
     )
+
+
+def _import_task_meta_key(task_id: str) -> str:
+    return f"library:import-task:{task_id}"
+
+
+def _get_import_task_meta(task_id: str) -> dict[str, Any]:
+    try:
+        client = redis.Redis.from_url(CELERY_RESULT_BACKEND, decode_responses=True)
+        raw = client.get(_import_task_meta_key(task_id))
+    except Exception:
+        return {}
+
+    if not raw:
+        return {}
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+    return data if isinstance(data, dict) else {}
+
+
+def _save_import_task_meta(task_id: str, payload: dict[str, Any]) -> None:
+    try:
+        client = redis.Redis.from_url(CELERY_RESULT_BACKEND, decode_responses=True)
+        client.setex(
+            _import_task_meta_key(task_id),
+            IMPORT_TASK_META_TTL_SECONDS,
+            json.dumps(payload),
+        )
+    except Exception:
+        pass
+
+
+def _delete_import_task_meta(task_id: str) -> None:
+    try:
+        client = redis.Redis.from_url(CELERY_RESULT_BACKEND, decode_responses=True)
+        client.delete(_import_task_meta_key(task_id))
+    except Exception:
+        pass
+
+
+def _delete_import_tmp_file(raw_path: Any) -> None:
+    if not isinstance(raw_path, str) or not raw_path:
+        return
+
+    upload_root = Path(UPLOAD_TMP_DIR).resolve()
+    tmp_path = Path(raw_path).resolve()
+
+    if upload_root not in tmp_path.parents:
+        return
+
+    tmp_path.unlink(missing_ok=True)
+
+
+@router.delete("/imports/{task_id}", response_model=CancelImportResponseDto)
+async def cancel_import(task_id: str) -> CancelImportResponseDto:
+    meta = await asyncio.to_thread(_get_import_task_meta, task_id)
+    task = AsyncResult(task_id, app=celery_app)
+
+    task.revoke(terminate=True, signal="SIGKILL")
+    await asyncio.to_thread(_delete_import_tmp_file, meta.get("tmp_path"))
+    await asyncio.to_thread(task.forget)
+    await asyncio.to_thread(_delete_import_task_meta, task_id)
+
+    return CancelImportResponseDto(
+        task_id=task_id,
+        state="REVOKED",
+        stage="cancelled",
+        status_label="Импорт отменен",
+        filename=meta.get("filename") if isinstance(meta.get("filename"), str) else None,
+    )
+
+
+def _status_from_payload(payload: dict | None) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+
+    status_payload = payload.get("status")
+    if isinstance(status_payload, dict):
+        merged = {**payload, **status_payload}
+        return merged
+
+    return payload
+
+
+def _human_import_error(raw_error: str | None) -> str | None:
+    if not raw_error:
+        return None
+
+    lower_error = raw_error.lower()
+    if (
+        "workerlosterror" in lower_error
+        or "sigkill" in lower_error
+        or "signal 9" in lower_error
+        or "exited prematurely" in lower_error
+    ):
+        return (
+            "Out of Memory: RAM"
+        )
+
+    return raw_error
 
 
 def _get_import_status_sync(task_id: str) -> ImportTaskStatusDto:
     task = AsyncResult(task_id, app=celery_app)
 
-    error = str(task.result) if task.failed() else None
+    raw_error = str(task.result) if task.failed() else None
+    error = _human_import_error(raw_error)
 
     result = None
     if task.successful():
@@ -441,11 +753,112 @@ def _get_import_status_sync(task_id: str) -> ImportTaskStatusDto:
     elif isinstance(task.info, dict):
         result = task.info
 
+    payload = _status_from_payload(result if isinstance(result, dict) else None)
+    state = task.state
+
+    queued = state == "PENDING"
+    stage = payload.get("stage")
+    status_label = payload.get("status_label")
+    progress_percent = payload.get("progress_percent")
+
+    if queued:
+        stage = "queued"
+        status_label = "Книга в очереди"
+        progress_percent = 0.0
+    elif task.successful():
+        stage = "completed"
+        status_label = "Загрузка завершена"
+        progress_percent = 100.0
+    elif task.failed():
+        stage = "failed"
+        if error != raw_error:
+            status_label = "Недостаточно памяти"
+        status_label = "Ошибка импорта"
+
+    if task.failed() and error != raw_error:
+        status_label = "Недостаточно памяти"
+
     return ImportTaskStatusDto(
         task_id=task_id,
-        state=task.state,
+        state=state,
+        filename=payload.get("filename"),
+        title=payload.get("title"),
+        authors=payload.get("authors"),
+        stage=stage,
+        status_label=status_label,
+        progress_percent=progress_percent,
+        current=payload.get("current"),
+        total=payload.get("total"),
+        unit=payload.get("unit"),
+        eta_seconds=payload.get("eta_seconds"),
+        queued=queued,
+        started_at=payload.get("started_at"),
+        updated_at=payload.get("updated_at"),
         result=result,
         error=error,
+    )
+
+
+def _terminal_import_status(status: ImportTaskStatusDto) -> bool:
+    return (
+        status.state in {"SUCCESS", "FAILURE", "REVOKED"}
+        or status.stage in {"completed", "failed", "cancelled"}
+    )
+
+
+def _sse_payload(status: ImportTaskStatusDto) -> str:
+    payload = status.model_dump(mode="json")
+    return f"event: import-status\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@router.get("/imports/events")
+async def stream_import_statuses(
+    request: Request,
+    ids: str,
+) -> StreamingResponse:
+    task_ids = [
+        task_id.strip()
+        for task_id in ids.split(",")
+        if task_id.strip()
+    ]
+
+    async def event_stream():
+        last_payloads: dict[str, str] = {}
+        active_task_ids = set(task_ids)
+
+        while active_task_ids:
+            if await request.is_disconnected():
+                break
+
+            finished_task_ids: set[str] = set()
+
+            for task_id in list(active_task_ids):
+                status = await asyncio.to_thread(_get_import_status_sync, task_id)
+                payload_key = json.dumps(
+                    status.model_dump(mode="json"),
+                    sort_keys=True,
+                    ensure_ascii=False,
+                )
+
+                if last_payloads.get(task_id) != payload_key:
+                    last_payloads[task_id] = payload_key
+                    yield _sse_payload(status)
+
+                if _terminal_import_status(status):
+                    finished_task_ids.add(task_id)
+
+            active_task_ids.difference_update(finished_task_ids)
+
+            if active_task_ids:
+                await asyncio.sleep(2)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

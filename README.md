@@ -126,7 +126,15 @@ docker compose exec db psql -U libuser -d library -c "UPDATE users SET role = 'a
 ```
 #### Массовый импорт книг
 
+EPUB-файлы для массового импорта кладутся в корневую папку `books/`. В контейнере backend она смонтирована как `/books`.
+
+Для запуска скрипта нужны Postgres, Elasticsearch, MinIO и backend-контейнер.
+
+Стандартный запуск через Docker:
+
 ```powershell
+docker compose up -d db elasticsearch minio backend
+
 docker compose exec backend /bin/bash
 
 python build_library_db.py \
@@ -137,6 +145,32 @@ python build_library_db.py \
   --es-index-content books_content \
   --embed-model /models/bge-m3 \
   --embed-device auto \
+  --embed-batch-size 64 \
+  --workers 1 \
   --max-missing-spine 1
 ```
+
+Параметры подбора:
+
+- `--workers` — количество процессов импорта. Для GPU обычно ставить `1`, потому что каждый процесс загружает свою копию модели. Для CPU можно пробовать `2`, `3`, `4`, если хватает RAM.
+- `--embed-device` — где считать embeddings: `auto`, `cuda`, `cpu`.  Для быстрого одиночного импорта на GPU использовать `auto` или `cuda`. Для параллельного CPU-импорта использовать `cpu`.
+- `--embed-batch-size` — сколько текстовых окон векторизуется за один проход модели. Качество результата не меняет. Большой batch обычно быстрее, но требует больше памяти. Если  возникает `out of memory`, уменьшать: `64 -> 32 -> 16 -> 8`.
+
+Рекомендуемые варианты:
+
+```powershell
+# Быстрый импорт на GPU, один процесс. Если хватает VRAM.
+python build_library_db.py --root /books --dsn postgresql://libuser:libpass@db:5432/library --es-url http://elasticsearch:9200 --es-index-meta books_meta --es-index-content books_content --embed-model /models/bge-m3 --embed-device cuda --embed-batch-size 64 --workers 1
+```
+
+```powershell
+# Более безопасный GPU-импорт при нехватке VRAM.
+python build_library_db.py --root /books --dsn postgresql://libuser:libpass@db:5432/library --es-url http://elasticsearch:9200 --es-index-meta books_meta --es-index-content books_content --embed-model /models/bge-m3 --embed-device cuda --embed-batch-size 16 --workers 1
+```
+
+```powershell
+# CPU-импорт, можно параллелить, но он медленнее.
+python build_library_db.py --root /books --dsn postgresql://libuser:libpass@db:5432/library --es-url http://elasticsearch:9200 --es-index-meta books_meta --es-index-content books_content --embed-model /models/bge-m3 --embed-device cpu --embed-batch-size 64 --workers 2
+```
+
 

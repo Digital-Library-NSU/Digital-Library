@@ -2,7 +2,7 @@ import sys
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import psycopg2
 import numpy as np
@@ -100,6 +100,14 @@ def get_encoder(model_name: Optional[str], device_mode: str = "auto"):
     return enc, dev
 
 
+def is_encoder_cached(model_name: Optional[str], device_mode: str = "auto") -> bool:
+    if not model_name:
+        return False
+
+    dev = _resolve_device(device_mode)
+    return (model_name, dev) in _ENCODER_CACHE
+
+
 def get_encoder_dim(model_name: str, device: str) -> int:
     key = (model_name, device)
     cached = _ENCODER_CACHE.get(key)
@@ -123,6 +131,16 @@ def get_encoder_dim(model_name: str, device: str) -> int:
     print(
         f"[INFO] Embedding model dim resolved: {model_name}, dim={dim}, device={dev}")
     return int(dim)
+
+
+def clear_encoder_cache() -> None:
+    _ENCODER_CACHE.clear()
+
+    if torch is not None and torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
 
 
 def parse_date(date_raw: str) -> Optional[str]:
@@ -506,16 +524,44 @@ def _extract_chapter_payloads(z: zipfile.ZipFile, meta: Dict,
     return payloads
 
 
-def process_epub(file_path: Path, args):
+def _emit_progress(
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+        **payload) -> None:
+    if progress_callback is None:
+        return
+
+    progress_callback(payload)
+
+
+def process_epub(
+        file_path: Path,
+        args,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None):
     idx_meta: str = args.es_index_meta
     idx_content: str = args.es_index_content
 
     print(f"[INFO] Processing EPUB: {file_path.name}")
+    _emit_progress(
+        progress_callback,
+        stage="parsing",
+        status_label="Читаем EPUB",
+        filename=file_path.name,
+        progress_percent=2.0,
+    )
 
     with zipfile.ZipFile(file_path, "r") as z:
         try:
             opf_path = parse_container_and_opf(z)
             meta = parse_opf(z, opf_path)
+            _emit_progress(
+                progress_callback,
+                stage="metadata",
+                status_label="Читаем метаданные",
+                filename=file_path.name,
+                title=_fallback_book_title(file_path, meta.get("title")),
+                authors=", ".join(meta.get("creators") or []),
+                progress_percent=6.0,
+            )
         except Exception as e:
             print(
                 f"[WARN] {
@@ -526,6 +572,15 @@ def process_epub(file_path: Path, args):
         if not _preflight_check_spine_missing(z, meta, args, file_path.name):
             return "skipped"
 
+        _emit_progress(
+            progress_callback,
+            stage="chapters",
+            status_label="Разбираем главы",
+            filename=file_path.name,
+            title=_fallback_book_title(file_path, meta.get("title")),
+            authors=", ".join(meta.get("creators") or []),
+            progress_percent=10.0,
+        )
         chapter_payloads = _extract_chapter_payloads(
             z, meta, args, file_path.name)
 
@@ -561,6 +616,16 @@ def process_epub(file_path: Path, args):
 
                 book_title_for_es = _fallback_book_title(
                     file_path, meta.get("title"))
+                book_authors_for_status = ", ".join(meta.get("creators") or [])
+                _emit_progress(
+                    progress_callback,
+                    stage="database",
+                    status_label="Сохраняем структуру книги",
+                    filename=file_path.name,
+                    title=book_title_for_es,
+                    authors=book_authors_for_status,
+                    progress_percent=15.0,
+                )
 
                 chapter_ids_by_ord: Dict[int, int] = {}
 
@@ -698,6 +763,19 @@ def process_epub(file_path: Path, args):
                         0) or 0)
 
                 if args.embed_model:
+                    total_vectors = len(texts_for_embed)
+                    _emit_progress(
+                        progress_callback,
+                        stage="vectorizing",
+                        status_label="Векторизуем фрагменты",
+                        filename=file_path.name,
+                        title=book_title_for_es,
+                        authors=book_authors_for_status,
+                        progress_percent=20.0,
+                        current=0,
+                        total=total_vectors,
+                        unit="windows",
+                    )
                     enc, enc_dev = get_encoder(
                         args.embed_model, device_mode=args.embed_device)
 
@@ -722,6 +800,27 @@ def process_epub(file_path: Path, args):
                                 convert_to_numpy=True,
                             )
                             vec_batches.append(embs)
+                            current_vectors = min(
+                                i + batch,
+                                len(texts_for_embed),
+                            )
+                            vector_progress = (
+                                current_vectors / total_vectors
+                                if total_vectors
+                                else 1.0
+                            )
+                            _emit_progress(
+                                progress_callback,
+                                stage="vectorizing",
+                                status_label="Векторизуем фрагменты",
+                                filename=file_path.name,
+                                title=book_title_for_es,
+                                authors=book_authors_for_status,
+                                progress_percent=20.0 + vector_progress * 60.0,
+                                current=current_vectors,
+                                total=total_vectors,
+                                unit="windows",
+                            )
 
                     embeddings = (
                         np.vstack(vec_batches)
@@ -748,6 +847,18 @@ def process_epub(file_path: Path, args):
                             meta_doc["book_vec"] = book_vec
 
                 if not args.no_es:
+                    _emit_progress(
+                        progress_callback,
+                        stage="indexing",
+                        status_label="Записываем индекс поиска",
+                        filename=file_path.name,
+                        title=book_title_for_es,
+                        authors=book_authors_for_status,
+                        progress_percent=84.0,
+                        current=len(content_docs),
+                        total=len(content_docs),
+                        unit="documents",
+                    )
                     ensure_es_indices(
                         args.es_url,
                         idx_meta,
@@ -771,6 +882,15 @@ def process_epub(file_path: Path, args):
                         raise
 
                 try:
+                    _emit_progress(
+                        progress_callback,
+                        stage="commit",
+                        status_label="Сохраняем книгу",
+                        filename=file_path.name,
+                        title=book_title_for_es,
+                        authors=book_authors_for_status,
+                        progress_percent=90.0,
+                    )
                     conn.commit()
                 except Exception:
                     conn.rollback()
@@ -787,6 +907,18 @@ def process_epub(file_path: Path, args):
 
                 # MinIO/S3 upload is intentionally after DB+ES success.
                 # It is not part of the DB+ES pseudo-transaction.
+                _emit_progress(
+                    progress_callback,
+                    stage="uploading",
+                    status_label="Сохраняем файлы книги",
+                    filename=file_path.name,
+                    title=book_title_for_es,
+                    authors=book_authors_for_status,
+                    progress_percent=92.0,
+                    current=0,
+                    total=len(chapter_payloads) + 1,
+                    unit="files",
+                )
                 try:
                     _upload_cover_to_storage(z, meta, book_id)
                 except Exception as e:
@@ -794,7 +926,7 @@ def process_epub(file_path: Path, args):
                         f"[WARN] cannot upload cover to storage for book {book_id}: {e}",
                         file=sys.stderr)
 
-                for payload in chapter_payloads:
+                for chapter_upload_idx, payload in enumerate(chapter_payloads, start=1):
                     cid = chapter_ids_by_ord.get(payload["ord"])
                     if cid is None:
                         continue
@@ -806,11 +938,35 @@ def process_epub(file_path: Path, args):
                         print(
                             f"[WARN] cannot upload chapter {cid} xml to storage: {e}",
                             file=sys.stderr)
+                    upload_total = len(chapter_payloads) + 1
+                    _emit_progress(
+                        progress_callback,
+                        stage="uploading",
+                        status_label="Сохраняем файлы книги",
+                        filename=file_path.name,
+                        title=book_title_for_es,
+                        authors=book_authors_for_status,
+                        progress_percent=92.0
+                        + (chapter_upload_idx / upload_total) * 7.0,
+                        current=chapter_upload_idx + 1,
+                        total=upload_total,
+                        unit="files",
+                    )
 
+                _emit_progress(
+                    progress_callback,
+                    stage="completed",
+                    status_label="Загрузка завершена",
+                    filename=file_path.name,
+                    title=book_title_for_es,
+                    authors=book_authors_for_status,
+                    progress_percent=100.0,
+                )
                 return {
                     "status": "ok",
                     "book_id": book_id,
                     "title": book_title_for_es,
+                    "authors": book_authors_for_status,
                     "chapters": len(chapter_ids_by_ord),
                     "content_docs": len(content_docs),
                 }
