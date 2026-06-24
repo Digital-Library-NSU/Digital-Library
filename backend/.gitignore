@@ -1,0 +1,23 @@
+.venv/
+venv/
+**/__pycache__/
+*.pyc
+.idea/
+.vscode/
+*.log
+*.epub
+**/*.epub
+**/.env
+
+# локальные папки с моделями
+integrations/model/
+integrations/models/
+integrations/models/**
+
+# крупные веса/артефакты на всякий
+*.bin
+*.safetensors
+*.pt
+tokenizer.json
+models/
+books_content/

@@ -1,0 +1,20 @@
+<div class="header__container">
+    <div class="header__logo">
+        <img src="book-logo.svg" width="48" height="48" alt="book" class="header__logo-img">
+        <span class="header__logo-title">Digital Library 2.0</span>
+    </div>
+    <div class="header__buttons">
+        @if (user(); as currentUser) {
+        <span class="header__user-login" title="Текущий пользователь">{{ currentUser.login }}</span>
+        <button class="header__button header__button--text" title="Выйти" (click)="logout()">
+            Выход
+        </button>
+        <button class="header__button" title="Перейти в профиль" (click)="toggleProfile()">
+            <img src="user-profile.svg" width="43" height="43" alt="user" class="buttons__user">
+        </button>
+        } @else {
+        <a class="header__button header__button--text" routerLink="/login">Войти</a>
+        <a class="header__button header__button--text" routerLink="/register">Регистрация</a>
+        }
+    </div>
+</div>

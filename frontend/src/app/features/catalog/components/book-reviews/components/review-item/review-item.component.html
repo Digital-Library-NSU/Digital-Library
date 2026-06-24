@@ -1,0 +1,23 @@
+@let currReview = review();
+<article class="review-item">
+    <header class="header">
+        <div class="left">
+            <span class="user-login">{{ currReview.user_login }}</span>
+            <span class="date">{{ (currReview.updated_at ?? currReview.created_at) | date: 'd MMMM y' }}</span>
+        </div>
+        <div class="rating">{{ currReview.rating }} / 10</div>
+    </header>
+
+    <p class="text">{{ currReview.text }}</p>
+
+    @if (canEdit() || canDelete()) {
+    <div class="actions">
+        @if (canEdit()) {
+        <button class="edit-btn" (click)="onEdit()">Редактировать</button>
+        }
+        @if (canDelete()) {
+        <button class="delete-btn" (click)="onDelete()">Удалить</button>
+        }
+    </div>
+    }
+</article>

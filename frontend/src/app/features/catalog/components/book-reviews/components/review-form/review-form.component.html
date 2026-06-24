@@ -1,0 +1,44 @@
+<form [formGroup]="form" (ngSubmit)="submit()" class="review-form">
+    <div class="row rating-row">
+        <label for="rating">Оценка:</label>
+        <input
+            id="rating"
+            type="number"
+            min="1"
+            max="10"
+            step="1"
+            formControlName="rating"
+            class="rating-input"
+        />
+        <span class="rating-suffix">/ 10</span>
+    </div>
+
+    <div class="row">
+        <textarea
+            formControlName="text"
+            placeholder="Поделитесь впечатлением о книге..."
+            rows="4"
+            class="text-input"
+        ></textarea>
+    </div>
+
+    @if (errorMessage) {
+        <p class="error">{{ errorMessage }}</p>
+    }
+
+    <div class="actions">
+        <button
+            type="submit"
+            class="submit-btn"
+            [disabled]="form.invalid || isSubmitting"
+        >
+            {{ isEditing() ? 'Сохранить' : 'Оставить отзыв' }}
+        </button>
+
+        @if (isEditing()) {
+            <button type="button" class="cancel-btn" (click)="cancel()">
+                Отмена
+            </button>
+        }
+    </div>
+</form>

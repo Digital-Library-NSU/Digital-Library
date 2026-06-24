@@ -1,0 +1,153 @@
+<div class="catalog-container">
+
+    <header class="catalog-header">
+        <h1>Каталог</h1>
+        @if (isAdmin()) {
+        <button class="add-book-btn" (click)="openUploadModal()">
+            + Загрузить книгу
+        </button>
+        }
+        <app-search-widget (searchResults)="onSearchResults($event)" (searchCleared)="onSearchCleared()">
+        </app-search-widget>
+    </header>
+
+    @if (viewMode === 'search') {
+    <app-search-results [hits]="searchResults" [total]="searchTotal" (detailsClick)="openBookDetails($event)">
+    </app-search-results>
+
+    @if (searchTotal === 0) {
+    <div class="empty-state">Совпадений не найдено.</div>
+    }
+    }
+
+    @if (viewMode === 'default') {
+    @if (error) {
+    <div class="error-message">
+        <p>{{ error }}</p>
+        <button (click)="loadBooks()">Заново</button>
+    </div>
+    }
+
+    @if (isLoading) {
+    <div class="loader-container">
+        <div class="spinner"></div>
+        <p>Загружаем книги...</p>
+    </div>
+    }
+
+    @if (!isLoading && !error) {
+    <div class="catalog-content">
+        <aside class="catalog-filter">
+            <label for="book-sort">Режим</label>
+            <select
+                id="book-sort"
+                [value]="sortMode"
+                (change)="onSortModeChanged($any($event.target).value)"
+            >
+                @for (option of sortOptions; track option.value) {
+                <option [value]="option.value" [selected]="option.value === sortMode">
+                    {{ option.label }}
+                </option>
+                }
+            </select>
+        </aside>
+
+        @if (books.length > 0) {
+        <div class="books-grid">
+            @for (book of books; track book.book_id) {
+            <app-book-card [book]="book" (details)="openBookDetails($event)"></app-book-card>
+            }
+        </div>
+        } @else {
+        <div class="empty-state">
+            <p>Архивы пусты.</p>
+        </div>
+        }
+    </div>
+    }
+    }
+
+    @if (selectedBook) {
+    <app-book-details-modal
+        [book]="selectedBook"
+        (close)="closeDetails()"
+        (bookUpdated)="onBookUpdated($event)"
+        (bookDeleted)="onBookDeleted($event)"
+    >
+    </app-book-details-modal>
+    }
+
+    @if (isDetailsLoading) {
+    <div class="overlay-loader">Открываем книгу...</div>
+    }
+
+    @if (showUploadModal) {
+    <app-upload-book-modal
+        (close)="closeUploadModal($event)"
+        (uploadQueued)="onUploadQueued($event)"
+    ></app-upload-book-modal>
+    }
+
+    @if (importToasts.length > 0) {
+    <div class="import-toast-stack">
+        @for (toast of importToasts; track toast.task_id) {
+        <section
+            class="import-toast"
+            [class.import-toast--queued]="toast.queued"
+            [class.import-toast--done]="toast.stage === 'completed' || toast.state === 'SUCCESS'"
+            [class.import-toast--failed]="toast.stage === 'failed' || toast.state === 'FAILURE'"
+            [class.import-toast--cancelled]="toast.stage === 'cancelled' || toast.state === 'REVOKED'"
+        >
+            @if (canCloseImportToast(toast)) {
+            <button class="import-toast__close" (click)="closeImportToast(toast.task_id)">&times;</button>
+            }
+            @if (canCancelImportToast(toast)) {
+            <button class="import-toast__cancel" (click)="cancelImportToast(toast.task_id)">Отменить</button>
+            }
+
+            <div class="import-toast__status">
+                @if (toast.queued) {
+                В очереди
+                } @else if (toast.stage === 'completed' || toast.state === 'SUCCESS') {
+                Завершено
+                } @else if (toast.stage === 'cancelled' || toast.state === 'REVOKED') {
+                Отменено
+                } @else if (toast.stage === 'failed' || toast.state === 'FAILURE') {
+                Ошибка
+                } @else {
+                Импорт
+                }
+            </div>
+
+            <h3>{{ importTitle(toast) }}</h3>
+            <p class="import-toast__authors">{{ importAuthors(toast) }}</p>
+            <p class="import-toast__label">{{ toast.status_label || 'Импортируем книгу' }}</p>
+
+            @if (shouldShowImportProgress(toast)) {
+            <div class="import-toast__progress" [class.import-toast__progress--indeterminate]="!hasImportProgress(toast)">
+                @if (hasImportProgress(toast)) {
+                <div class="import-toast__bar" [style.width.%]="importProgress(toast)"></div>
+                } @else {
+                <div class="import-toast__bar"></div>
+                }
+            </div>
+            }
+
+            <div class="import-toast__meta">
+                @if (shouldShowImportProgress(toast) && hasImportProgress(toast)) {
+                <span>{{ importProgress(toast) }}%</span>
+                }
+                @if (importCounter(toast)) {
+                <span>{{ importCounter(toast) }}</span>
+                }
+            </div>
+
+            @if (toast.error) {
+            <p class="import-toast__error">{{ toast.error }}</p>
+            }
+        </section>
+        }
+    </div>
+    }
+
+</div>

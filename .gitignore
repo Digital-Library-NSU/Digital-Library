@@ -1,9 +1,3 @@
-.venv/
-venv/
-__pycache__/
-*.pyc
-.idea/
-.vscode/
-*.log
-*.epub
-**/*.epub
+minio_data/
+/models/
+books/

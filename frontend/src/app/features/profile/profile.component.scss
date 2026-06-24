@@ -1,0 +1,320 @@
+.profile-page {
+    width: 100%;
+    min-height: calc(100vh - 70px);
+    padding: 24px 32px 40px;
+    background: var(--main-bg-color);
+    color: #333;
+}
+
+.profile-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin-bottom: 18px;
+
+    h1 {
+        margin: 0;
+        font-family: "EirikRaude", "Courier New", Courier, monospace;
+        color: var(--primary-text-color);
+        font-size: 2.4rem;
+    }
+
+    p {
+        margin: 4px 0 0;
+        font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+        color: #666;
+    }
+}
+
+.tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 24px;
+    border-bottom: 1px solid rgba(68, 45, 30, 0.2);
+
+    button {
+        font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+        border: none;
+        background: transparent;
+        color: var(--primary-text-color);
+        padding: 10px 14px;
+        cursor: pointer;
+        border-bottom: 3px solid transparent;
+
+        &.active {
+            border-bottom-color: var(--primary-text-color);
+            font-weight: 600;
+        }
+    }
+}
+
+.message {
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+    padding: 18px 0;
+    color: #666;
+
+    &.error {
+        color: #c0392b;
+    }
+}
+
+.books-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    gap: 24px;
+}
+
+.book-card {
+    position: relative;
+    flex-direction: column;
+    display: flex;
+    height: 460px;
+    background: rgba(255, 255, 255, 0.6);
+    backdrop-filter: blur(10px);
+    border-radius: 16px;
+    padding: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.progress-badge {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    z-index: 1;
+    background: var(--primary-text-color);
+    color: #fff;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+    font-size: 0.85rem;
+}
+
+.cover-wrapper {
+    width: 100%;
+    aspect-ratio: 2/3;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 12px;
+    background-color: #e0e0e0;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+
+    img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+}
+
+.placeholder-cover {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #757575;
+    font-size: 0.8rem;
+}
+
+.info {
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+    justify-content: space-between;
+}
+
+.title,
+.author,
+.rating,
+.read-btn,
+.details-btn,
+.review-card,
+.meta-grid,
+.description {
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+}
+
+.title {
+    margin: 0 0 4px;
+    font-size: 1rem;
+    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.author {
+    margin: 0;
+    color: #666;
+}
+
+.rating {
+    margin: 6px 0 3px;
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    font-size: 0.85rem;
+}
+
+.rating-value {
+    color: var(--primary-text-color);
+    font-weight: 600;
+}
+
+.rating-count,
+.date {
+    color: #888;
+}
+
+.no-rating {
+    color: #aaa;
+    font-style: italic;
+}
+
+.actions {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.read-btn {
+    width: 100%;
+    padding: 8px;
+    background-color: var(--primary-text-color);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+
+    &:hover {
+        background-color: var(--primary-hover-color);
+    }
+}
+
+.details-btn {
+    width: 100%;
+    padding: 8px;
+    background: transparent;
+    border: 1px solid var(--primary-text-color);
+    color: var(--primary-text-color);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+
+    &:hover {
+        background-color: var(--primary-text-color);
+        color: white;
+    }
+}
+
+.review-list {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.review-card {
+    display: flex;
+    gap: 24px;
+    background: rgba(255, 255, 255, 0.76);
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 12px;
+    padding: 20px;
+}
+
+.review-cover {
+    flex: 0 0 150px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    img,
+    .placeholder-cover {
+        width: 150px;
+        height: 225px;
+        border-radius: 8px;
+        object-fit: cover;
+        background: #eee;
+    }
+}
+
+.review-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    width: 150px;
+}
+
+.review-info {
+    flex: 1;
+
+    h2 {
+        margin: 0 0 6px;
+        color: #2c3e50;
+    }
+}
+
+.rating-row {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin: 10px 0 16px;
+}
+
+.meta-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 14px;
+    color: #555;
+    font-size: 0.9rem;
+}
+
+.description {
+    line-height: 1.55;
+
+    h3 {
+        margin: 14px 0 6px;
+        color: #95a5a6;
+        font-size: 1rem;
+        text-transform: uppercase;
+        border-bottom: 1px solid #eee;
+        padding-bottom: 5px;
+    }
+
+    p {
+        margin: 0;
+    }
+}
+
+.my-review-block {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 18px;
+}
+
+.my-review-label {
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--primary-text-color);
+    text-transform: uppercase;
+}
+
+@media (max-width: 700px) {
+    .profile-page {
+        padding: 18px;
+    }
+
+    .tabs {
+        overflow-x: auto;
+    }
+
+    .review-card {
+        flex-direction: column;
+    }
+
+    .review-cover {
+        flex: none;
+    }
+}

@@ -1,0 +1,314 @@
+.catalog-container {
+    padding: 1rem 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+    min-height: 90vh;
+    position: relative;
+}
+
+h1,
+button,
+p,
+span,
+div {
+    font-family: "EirikRaude", "Courier New", Courier, monospace;
+}
+
+.catalog-header {
+    text-align: left;
+    margin-bottom: 1rem;
+
+    h1 {
+        font-family: "EirikRaude", "Courier New", Courier, monospace;
+        font-size: 3rem;
+        font-weight: 700;
+        color: var(--primary-text-color);
+        margin-bottom: 0.5rem;
+    }
+
+    .add-book-btn {
+        background: transparent;
+        border: 1px solid #7f8c8d;
+        color: #555;
+        padding: 8px 20px;
+        border-radius: 20px;
+        cursor: pointer;
+        transition: all 0.3s;
+        font-size: 1.2rem;
+
+        &:hover {
+            background: var(--primary-text-color);
+            color: white;
+            border-color: var(--primary-text-color);
+        }
+    }
+}
+
+.catalog-content {
+    position: relative;
+}
+
+.catalog-filter {
+    position: absolute;
+    top: 0;
+    right: calc(100% + 2rem);
+    width: 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+    background: rgba(255, 255, 255, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 8px;
+    backdrop-filter: blur(10px);
+
+    label {
+        font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+        color: var(--primary-text-color);
+        font-size: 0.95rem;
+    }
+
+    select {
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid rgba(68, 45, 30, 0.25);
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.85);
+        color: #333;
+        font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+        cursor: pointer;
+    }
+}
+
+.books-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 2rem;
+}
+
+.loader-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 300px;
+    color: #4e371e;
+}
+
+.spinner {
+    width: 50px;
+    height: 50px;
+    border: 4px solid rgba(0, 0, 0, 0.1);
+    border-left-color: #3498db;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 1rem;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.error-message {
+    letter-spacing: 1px;
+    font-size: 1.5rem;
+    text-align: center;
+    color: #e74c3c;
+    background: rgba(231, 76, 60, 0.1);
+    padding: 2rem;
+    border-radius: 8px;
+
+    button {
+        border: none;
+        border-radius: 8px;
+        margin-top: 1rem;
+        padding: 8px 16px;
+        cursor: pointer;
+        letter-spacing: 1px;
+    }
+}
+
+.empty-state {
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+    text-align: center;
+    color: #95a5a6;
+    font-size: 1.2rem;
+    margin-top: 3rem;
+}
+
+.import-toast-stack {
+    position: fixed;
+    right: max(1rem, calc((100vw - 1200px) / 2 - 320px));
+    bottom: 1.5rem;
+    z-index: 1100;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 12px;
+    width: min(320px, calc(33vw - 2rem));
+    pointer-events: none;
+}
+
+.import-toast {
+    position: relative;
+    padding: 14px;
+    background: rgba(255, 255, 255, 0.94);
+    border: 1px solid rgba(68, 45, 30, 0.18);
+    border-left: 4px solid var(--primary-text-color);
+    border-radius: 8px;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
+    backdrop-filter: blur(10px);
+    pointer-events: auto;
+
+    h3 {
+        margin: 4px 90px 2px 0;
+        color: var(--primary-text-color);
+        font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+        font-size: 1rem;
+        line-height: 1.25;
+    }
+
+    &--queued {
+        border-left-color: #7f8c8d;
+    }
+
+    &--done {
+        border-left-color: #2e7d32;
+    }
+
+    &--failed {
+        border-left-color: #c0392b;
+    }
+
+    &--cancelled {
+        border-left-color: #7f8c8d;
+    }
+}
+
+.import-toast__close {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    border: none;
+    background: transparent;
+    color: #555;
+    cursor: pointer;
+    font-size: 1.4rem;
+    line-height: 1;
+}
+
+.import-toast__cancel {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    padding: 4px 8px;
+    border: 1px solid rgba(68, 45, 30, 0.25);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.8);
+    color: #4e371e;
+    cursor: pointer;
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+    font-size: 0.74rem;
+}
+
+.import-toast__status {
+    display: inline-flex;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: rgba(68, 45, 30, 0.08);
+    color: #4e371e;
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+    font-size: 0.78rem;
+}
+
+.import-toast__authors,
+.import-toast__label,
+.import-toast__meta,
+.import-toast__error {
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+}
+
+.import-toast__authors {
+    margin: 0;
+    color: #65564a;
+    font-size: 0.86rem;
+}
+
+.import-toast__label {
+    margin: 10px 0 8px;
+    color: #333;
+    font-size: 0.9rem;
+}
+
+.import-toast__progress {
+    width: 100%;
+    height: 7px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(68, 45, 30, 0.12);
+}
+
+.import-toast__bar {
+    height: 100%;
+    border-radius: inherit;
+    background: var(--primary-text-color);
+    transition: width 0.25s ease;
+}
+
+.import-toast__progress--indeterminate .import-toast__bar {
+    width: 45%;
+    animation: importProgressIndeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes importProgressIndeterminate {
+    0% {
+        transform: translateX(-110%);
+    }
+
+    100% {
+        transform: translateX(230%);
+    }
+}
+
+.import-toast--done .import-toast__bar {
+    background: #2e7d32;
+}
+
+.import-toast--failed .import-toast__bar {
+    background: #c0392b;
+}
+
+.import-toast--cancelled .import-toast__bar {
+    background: #7f8c8d;
+}
+
+.import-toast__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    margin-top: 8px;
+    color: #5f6a6a;
+    font-size: 0.78rem;
+}
+
+.import-toast__error {
+    margin: 8px 0 0;
+    color: #c0392b;
+    font-size: 0.84rem;
+}
+
+@media (max-width: 800px) {
+    .catalog-filter {
+        position: static;
+        width: auto;
+        margin-bottom: 1rem;
+    }
+
+    .import-toast-stack {
+        right: 1rem;
+        left: 1rem;
+        bottom: 1rem;
+        width: auto;
+    }
+}

@@ -1,0 +1,84 @@
+.bookmarks-panel {
+    position: fixed;
+    right: -320px;
+    top: 0;
+    width: 320px;
+    height: 100%;
+    background: #fff;
+    box-shadow: -2px 0 10px rgba(0, 0, 0, 0.1);
+    z-index: 100;
+    transition: right 0.3s ease;
+    padding: 20px;
+    overflow-y: auto;
+    box-sizing: border-box;
+
+    &.open {
+        right: 0;
+    }
+}
+
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+
+    h3 {
+        margin: 0;
+    }
+}
+
+.close-btn {
+    border: none;
+    background: none;
+    font-size: 1.5rem;
+    cursor: pointer;
+    color: #555;
+}
+
+.bookmarks-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.bookmark-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 10px;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+
+    &:hover {
+        background: #f0f0f0;
+    }
+}
+
+.bookmark-chapter {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.delete-btn {
+    border: none;
+    background: none;
+    color: #c0392b;
+    font-size: 1.2rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+
+    &:hover {
+        color: #e74c3c;
+    }
+}
+
+.empty {
+    color: #888;
+    font-style: italic;
+    font-size: 0.9rem;
+}

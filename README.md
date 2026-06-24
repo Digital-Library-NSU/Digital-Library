@@ -1,115 +1,176 @@
 ## 1) Cсылка с EPUB
 > https://disk.yandex.ru/d/HKrE-odHqdUEAw
 
-## 2) Установка DBeaver CE
-> https://dbeaver.io/download/
+## 2) Структура проекта
+Проект запускается через Docker Compose из корня репозитория. Основные директории расположены так:
+```text
+Digital-Library/
+├── backend/
+│   ├── app/
+│   │   ├── import_epub/
+│   │   ├── tasks/
+│   │   ├── routers/
+│   │   ├── config.py
+│   │   └── main.py
+│   ├── .venv/                  # окружение в бэкенде а не в корне
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── schema.sql
+│   └── build_library_db.py
+├── frontend/
+├── models/                     #вынесена из бекенда(монтируется отдельно)
+│   └── bge-m3/
+├── books/                      # именно с таким докер монтирует епабы(для массовой загрузки)
+├── docker-compose.yml
+└── Makefile
+```
+## 3) Скачивание модели
+### Windows PowerShell
 
-Ubuntu (через snap):
-```bash
-sudo snap install dbeaver-ce
+Из корня проекта:
+
+```powershell
+mkdir models
+python -m pip install huggingface_hub
 ```
 
-## 3) PostgreSQL: установка и создание БД/пользователя
-Установить и запустить:
-```bash
-sudo apt update
-sudo apt install -y postgresql postgresql-contrib
-sudo systemctl enable postgresql
-sudo systemctl start postgresql
-```
-Создать пользователя и базу:
-```bash
-sudo -u postgres psql <<'SQL'
-CREATE ROLE libuser WITH LOGIN PASSWORD 'libpass';
-CREATE DATABASE library OWNER libuser;
-GRANT ALL PRIVILEGES ON DATABASE library TO libuser;
-\q
-SQL
-```
-DSN для дальнейших команд: 
-> postgresql://libuser:libpass@localhost:5432/library
+Скачать модель:
 
-## 4) Elasticsearch (Docker)
-Запускать без vpn
+```powershell
+python -c "from huggingface_hub import snapshot_download; snapshot_download('BAAI/bge-m3', local_dir='./models/bge-m3', resume_download=True); print('Модель скачана в ./models/bge-m3')"
+```
+### Linux / macOS
 
-Первый запуск:
+Из корня проекта:
+
 ```bash
-docker pull elastic/elasticsearch:8.14.1
-sudo docker run --name es8 -p 9200:9200 -p 9300:9300 \
-  -e discovery.type=single-node \
-  -e xpack.security.enabled=false \
-  -e ES_JAVA_OPTS="-Xms2g -Xmx2g" \
-  -v esdata:/usr/share/elasticsearch/data \
-  elastic/elasticsearch:8.14.1
+mkdir -p models
+python3 -m pip install huggingface_hub
 ```
-Впоследующем:
+
+Скачать модель:
+
 ```bash
-sudo docker start es8
+python3 - <<'PY'
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    'BAAI/bge-m3',
+    local_dir='./models/bge-m3',
+    resume_download=True,
+)
+
+print('Модель скачана в ./models/bge-m3')
+PY
 ```
-Проверка:
+
+## 4) Torch и CUDA
+В `backend/Dockerfile` `torch` устанавливается отдельно от остальных зависимостей, чтобы можно было выбрать CPU- или GPU-сборку.
+
+Для GPU используется CUDA-сборка:
+
+```dockerfile
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+```
+
+Если на машине нет NVIDIA GPU / CUDA / GPU-проброса в Docker, можно использовать CPU-сборку:
+
+```dockerfile
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+```
+В `docker-compose.yml` это задаётся через build arg:
+
+```yaml
+build:
+  context: ./backend
+  args:
+    TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
+```
+
+Для CPU-варианта заменить на:
+
+```yaml
+build:
+  context: ./backend
+  args:
+    TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
+```
+
+Если gpu используется в логах celery при загрузке должно появится 
 ```bash
-curl http://localhost:9200
+[INFO] Embedding model loaded: /models/bge-m3, device=cuda
 ```
-Должно быть че то типо(может не сразу появляться, немного подождать надо):
+
+## 5) Команды через compose
+#### Запустить сервисы:
+
+```powershell
+docker compose up -d
 ```
-{
-  "name" : "8c2cb0de17f0",
-  "cluster_name" : "docker-cluster",
-  "cluster_uuid" : "3Hz68rApRoW0qJQ-NBAX7A",
-  "version" : {
-    "number" : "8.14.1",
-    "build_flavor" : "default",
-    "build_type" : "docker",
-    "build_hash" : "93a57a1a76f556d8aee6a90d1a95b06187501310",
-    "build_date" : "2024-06-10T23:35:17.114581191Z",
-    "build_snapshot" : false,
-    "lucene_version" : "9.10.0",
-    "minimum_wire_compatibility_version" : "7.17.0",
-    "minimum_index_compatibility_version" : "7.0.0"
-  },
-  "tagline" : "You Know, for Search"
-}
+
+#### Запустить с пересборкой образов:
+
+```powershell
+docker compose up -d --build
 ```
-## 5) Импорт EPUB в БД + ES
+#### Остановить сервисы:
+
+```powershell
+docker compose down
 ```
-pip install -r requirements.txt
+
+#### Сделать пользователя admin администратором
+
+```powershell
+docker compose exec db psql -U libuser -d library -c "UPDATE users SET role = 'admin' WHERE login = 'admin'; SELECT id, login, role FROM users WHERE login = 'admin';"
 ```
-```
+#### Массовый импорт книг
+
+EPUB-файлы для массового импорта кладутся в корневую папку `books/`. В контейнере backend она смонтирована как `/books`.
+
+Для запуска скрипта нужны Postgres, Elasticsearch, MinIO и backend-контейнер.
+
+Стандартный запуск через Docker:
+
+```powershell
+docker compose up -d db elasticsearch minio backend
+
+docker compose exec backend /bin/bash
+
 python build_library_db.py \
-  --dsn postgresql://libuser:libpass@localhost:5432/library \
-  --root <ВАШ_ПУТЬ_К_EPUB_ПАПКЕ> \
-  --create-db --recreate-schema \
-  --es-url http://localhost:9200 \
-  --es-use-templates --es-enable-suggest \
-  --chunk-words 800 --chunk-overlap 80
-```
-## 6) Как открыть базу в DBeaver
-1. Database → New Database Connection → PostgreSQL
-2. Параметры:
-   * Host: localhost
-   * Port: 5432
-   * Database: library
-   * Username: libuser
-   * Password: libpass
-   * SSL: Disabled
-3. Test Connection → Finish.   
-
-## 7) Запуск бекенда и примеры запросов в Postman
-```
-uvicorn app:app --reload --port 8000
+  --root /books \
+  --dsn postgresql://libuser:libpass@db:5432/library \
+  --es-url http://elasticsearch:9200 \
+  --es-index-meta books_meta \
+  --es-index-content books_content \
+  --embed-model /models/bge-m3 \
+  --embed-device auto \
+  --embed-batch-size 64 \
+  --workers 1 \
+  --max-missing-spine 1
 ```
 
-Проверка:
-```
-GET http://localhost:8000/health
-```
-Поиск по названию:
-```
-GET http://localhost:8000/books/search?q=Анна%20Коренина&size=5
-```
-(ошибка в фамилии специально - найдет)
+Параметры подбора:
 
-Поиск по цитате:
+- `--workers` — количество процессов импорта. Для GPU обычно ставить `1`, потому что каждый процесс загружает свою копию модели. Для CPU можно пробовать `2`, `3`, `4`, если хватает RAM.
+- `--embed-device` — где считать embeddings: `auto`, `cuda`, `cpu`.  Для быстрого одиночного импорта на GPU использовать `auto` или `cuda`. Для параллельного CPU-импорта использовать `cpu`.
+- `--embed-batch-size` — сколько текстовых окон векторизуется за один проход модели. Качество результата не меняет. Большой batch обычно быстрее, но требует больше памяти. Если  возникает `out of memory`, уменьшать: `64 -> 32 -> 16 -> 8`.
+
+Рекомендуемые варианты:
+
+```powershell
+# Быстрый импорт на GPU, один процесс. Если хватает VRAM.
+python build_library_db.py --root /books --dsn postgresql://libuser:libpass@db:5432/library --es-url http://elasticsearch:9200 --es-index-meta books_meta --es-index-content books_content --embed-model /models/bge-m3 --embed-device cuda --embed-batch-size 64 --workers 1
 ```
-GET http://localhost:8000/quotes/search?q=Все%20смешалось%20в%20доме%20Облонских&slop=2&size=5
+
+```powershell
+# Более безопасный GPU-импорт при нехватке VRAM.
+python build_library_db.py --root /books --dsn postgresql://libuser:libpass@db:5432/library --es-url http://elasticsearch:9200 --es-index-meta books_meta --es-index-content books_content --embed-model /models/bge-m3 --embed-device cuda --embed-batch-size 16 --workers 1
 ```
+
+```powershell
+# CPU-импорт, можно параллелить, но он медленнее.
+python build_library_db.py --root /books --dsn postgresql://libuser:libpass@db:5432/library --es-url http://elasticsearch:9200 --es-index-meta books_meta --es-index-content books_content --embed-model /models/bge-m3 --embed-device cpu --embed-batch-size 64 --workers 2
+```
+
+

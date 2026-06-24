@@ -1,0 +1,21 @@
+<aside class="bookmarks-panel" [class.open]="isOpen()">
+    <div class="panel-header">
+        <h3>Закладки</h3>
+        <button class="close-btn" (click)="closePanel()">&times;</button>
+    </div>
+
+    @if (items().length > 0) {
+    <ul class="bookmarks-list">
+        @for (bm of items(); track bm.bookmark_id) {
+        <li class="bookmark-item" (click)="onNavigate(bm)">
+            <span class="bookmark-chapter">{{ bm.chapterTitle }}</span>
+            <button class="delete-btn" (click)="onDelete($event, bm)" title="Удалить закладку">
+                &times;
+            </button>
+        </li>
+        }
+    </ul>
+    } @else {
+    <p class="empty">Пока нет закладок. Откройте нужное место и нажмите ★.</p>
+    }
+</aside>
