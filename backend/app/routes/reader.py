@@ -1,4 +1,5 @@
-from typing import List, Dict, Any, Tuple
+import asyncio
+from typing import List, Dict, Any, Literal, Tuple
 
 from fastapi import HTTPException, Query
 from fastapi.responses import Response
@@ -15,6 +16,7 @@ from app.dtos.reader_dtos import (
 from app.dtos.search_dtos import SnippetDTO
 from app.integrations.database import get_db_session
 from app.integrations.elasticsearch import es_post
+from app.integrations.embed_model import _HAS_ST, encode_query
 from app.integrations.object_storage import get_object_bytes, chapter_key
 from app.integrations.orm import Book, Chapter
 from app.utils.paragraph_extras import fetch_paragraph_extras
@@ -40,6 +42,17 @@ def _chapter_key(sn: SnippetDTO) -> str:
     return sn.chapter_path or f"ord:{sn.chapter_ord}"
 
 
+def _make_semantic_snippet(text: str | None, max_len: int = 220) -> str:
+    if not text:
+        return ""
+
+    value = text.strip()
+    if len(value) <= max_len:
+        return value
+
+    return value[: max_len - 1].rstrip() + "…"
+
+
 async def _book_exists(book_id: int) -> bool:
     async with get_db_session() as db:
         result = await db.execute(select(Book.id).where(Book.id == book_id))
@@ -50,6 +63,7 @@ async def _book_exists(book_id: int) -> bool:
 async def search_in_book(
     book_id: int,
     q: str = Query(..., description="Цитата/фраза для поиска внутри этой книги"),
+    mode: Literal["fulltext", "semantic"] = Query("fulltext", description="Режим поиска внутри книги"),
     size: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     slop: int = Query(2, ge=0, le=20, description="slop для match_phrase"),
@@ -85,7 +99,7 @@ async def search_in_book(
         }
     }
 
-    async def _do_es_search(must_query: Dict[str, Any]) -> Dict[str, Any]:
+    async def _do_fulltext_search(must_query: Dict[str, Any]) -> Dict[str, Any]:
         body: Dict[str, Any] = {
             "from": offset,
             "size": size,
@@ -113,12 +127,44 @@ async def search_in_book(
 
         return await es_post(f"{IDX_CONTENT}/_search", body)
 
-    res = await _do_es_search(phrase_query)
-    hits_raw = res.get("hits", {}).get("hits", [])
+    async def _do_semantic_search() -> Dict[str, Any]:
+        if not _HAS_ST:
+            raise HTTPException(
+                500, "sentence-transformers is not installed on the server"
+            )
 
-    if fuzzy_fallback and not hits_raw:
-        res = await _do_es_search(fuzzy_query)
+        try:
+            qvec = await asyncio.to_thread(encode_query, q)
+        except Exception as e:
+            raise HTTPException(500, f"Encoder error: {e}")
+
+        semantic_size = 5
+        semantic_pool_size = max(semantic_size * 4, semantic_size + offset)
+        body: Dict[str, Any] = {
+            "from": offset,
+            "size": semantic_pool_size,
+            "knn": {
+                "field": "content_vec",
+                "query_vector": qvec,
+                "k": semantic_pool_size,
+                "num_candidates": max(100, semantic_pool_size * 20),
+                "filter": {"bool": {"filter": content_filter}},
+            },
+            "_source": CONTENT_HIT_SOURCE,
+        }
+
+        return await es_post(f"{IDX_CONTENT}/_search", body)
+
+    if mode == "semantic":
+        res = await _do_semantic_search()
         hits_raw = res.get("hits", {}).get("hits", [])
+    else:
+        res = await _do_fulltext_search(phrase_query)
+        hits_raw = res.get("hits", {}).get("hits", [])
+
+        if fuzzy_fallback and not hits_raw:
+            res = await _do_fulltext_search(fuzzy_query)
+            hits_raw = res.get("hits", {}).get("hits", [])
 
     doc_ids = [h.get("_id") for h in hits_raw if h.get("_id")]
     para_extras = await fetch_paragraph_extras(doc_ids)
@@ -147,8 +193,14 @@ async def search_in_book(
         chapter_path = _chapter_path(book_id, int(chapter_id)) if chapter_id is not None else ""
 
         hl_list = h.get("highlight", {}).get("content", [])
-        snippet_html = hl_list[0] if hl_list else ""
+        snippet_html = hl_list[0] if hl_list else _make_semantic_snippet(src.get("content"))
         canon_hl = canonical_highlight(snippet_html)
+
+        hit_block_index = (
+            resolve_hit_block_index(src, snippet_html)
+            if mode == "fulltext"
+            else src.get("block_start")
+        )
 
         snippet = SnippetDTO(
             doc_id=doc_id,
@@ -160,7 +212,7 @@ async def search_in_book(
 
             block_start=extra.block_start if extra else src.get("block_start"),
             block_end=extra.block_end if extra else src.get("block_end"),
-            hit_block_index=resolve_hit_block_index(src, snippet_html),
+            hit_block_index=hit_block_index,
         )
 
         hits_with_key.append(
@@ -190,18 +242,24 @@ async def search_in_book(
             chapter_map = {}
             best_by_chapter_start[ck] = chapter_map
 
-        left = chapter_map.get(start - 1)
-        right = chapter_map.get(start + 1)
-
-        if left is not None and same_highlight(canon_hl, left[1]):
-            continue
-        if right is not None and same_highlight(canon_hl, right[1]):
+        same_block = chapter_map.get(start)
+        if same_block is not None:
             continue
 
-        chapter_map[start] = (hit, canon_hl)
-        kept.append((hit, canon_hl))
+        for nearby_start in range(start - 2, start + 3):
+            nearby = chapter_map.get(nearby_start)
+            if nearby is not None and same_highlight(canon_hl, nearby[1]):
+                break
+        else:
+            chapter_map[start] = (hit, canon_hl)
+            kept.append((hit, canon_hl))
+            continue
+
+        continue
 
     hits = [h for (h, _) in kept]
+    if mode == "semantic":
+        hits = hits[:5]
 
     return InBookSearchResponseDTO(total=len(hits), hits=hits)
 

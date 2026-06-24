@@ -11,7 +11,10 @@ import {
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, Router } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { ReaderService } from '../../core/services/reader.service';
+import {
+    InBookSearchMode,
+    ReaderService,
+} from '../../core/services/reader.service';
 import {
     ChaptersList,
     InBookSearchHit,
@@ -69,6 +72,7 @@ export class ReaderComponent implements OnInit, OnDestroy {
     isSearchOpen = false;
     isSearching = false;
     searchQuery = '';
+    searchMode: InBookSearchMode = 'fulltext';
     searchResults: InBookSearchHit[] = [];
 
     ngOnInit() {
@@ -263,7 +267,7 @@ export class ReaderComponent implements OnInit, OnDestroy {
         if (!query) return;
 
         this.isSearching = true;
-        this.readerService.searchInBook(this.bookId, query).subscribe({
+        this.readerService.searchInBook(this.bookId, query, this.searchMode).subscribe({
             next: (response) => {
                 this.searchResults = response.hits;
                 this.isSearching = false;
@@ -273,6 +277,17 @@ export class ReaderComponent implements OnInit, OnDestroy {
                 this.isSearching = false;
             },
         });
+    }
+
+    setSearchMode(mode: InBookSearchMode) {
+        if (this.searchMode === mode) return;
+
+        this.searchMode = mode;
+        this.searchResults = [];
+
+        if (this.searchQuery.trim()) {
+            this.performInBookSearch();
+        }
     }
 
     goToSearchResult(hit: InBookSearchHit) {

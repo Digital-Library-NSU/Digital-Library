@@ -39,6 +39,23 @@
 
                 @if (isSearchOpen) {
                 <div class="search-dropdown">
+                    <div class="search-mode-row">
+                        <button
+                            type="button"
+                            [class.active]="searchMode === 'fulltext'"
+                            (click)="setSearchMode('fulltext')"
+                        >
+                            Точно
+                        </button>
+                        <button
+                            type="button"
+                            [class.active]="searchMode === 'semantic'"
+                            (click)="setSearchMode('semantic')"
+                        >
+                            Смысл
+                        </button>
+                    </div>
+
                     <div class="search-input-row">
                         <input type="text" placeholder="Найти в книге..." [(ngModel)]="searchQuery"
                             (keydown.enter)="performInBookSearch()" autofocus>

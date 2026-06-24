@@ -230,6 +230,28 @@ li {
     }
 }
 
+.search-mode-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    margin-bottom: 8px;
+
+    button {
+        background: #f4efe9;
+        color: #442d1e;
+        border: 1px solid #d8c9bd;
+        border-radius: 4px;
+        padding: 5px 8px;
+        cursor: pointer;
+
+        &.active {
+            background: #442d1e;
+            color: #fff;
+            border-color: #442d1e;
+        }
+    }
+}
+
 .search-results-list {
     overflow-y: auto;
     flex: 1;

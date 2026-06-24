@@ -6,6 +6,8 @@ import {
     InBookSearchResponse,
 } from '../../shared/models/reader.model';
 
+export type InBookSearchMode = 'fulltext' | 'semantic';
+
 @Injectable({
     providedIn: 'root',
 })
@@ -20,9 +22,14 @@ export class ReaderService {
         return this.api.get(`/reader/${bookId}/${chapterId}`, {}, 'text');
     }
 
-    searchInBook(bookId: number, q: string): Observable<InBookSearchResponse> {
+    searchInBook(
+        bookId: number,
+        q: string,
+        mode: InBookSearchMode = 'fulltext',
+    ): Observable<InBookSearchResponse> {
         return this.api.get<InBookSearchResponse>(`/reader/${bookId}/search`, {
             q,
+            mode,
         });
     }
 }
