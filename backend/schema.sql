@@ -67,6 +67,8 @@ END $$;
 CREATE TABLE IF NOT EXISTS users (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     login           VARCHAR(255) NOT NULL UNIQUE,
+    email           VARCHAR(320),
+    notify_recommendations BOOLEAN DEFAULT false NOT NULL,
     hashed_password VARCHAR(60) NOT NULL,
     role            user_role DEFAULT 'user' NOT NULL
 );
@@ -137,3 +139,15 @@ CREATE TRIGGER trg_reading_progress_updated_at
 BEFORE UPDATE ON reading_progress
 FOR EACH ROW
 EXECUTE FUNCTION set_reading_progress_updated_at();
+
+CREATE TABLE IF NOT EXISTS recommendation_notifications (
+    user_id     UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+    book_id     BIGINT REFERENCES books(id) ON DELETE CASCADE NOT NULL,
+    score       DOUBLE PRECISION NOT NULL,
+    sent_at     TIMESTAMP NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, book_id),
+    CHECK (score >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recommendation_notifications_user_sent
+ON recommendation_notifications (user_id, sent_at DESC);

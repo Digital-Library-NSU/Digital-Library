@@ -7,10 +7,10 @@ from celery.result import AsyncResult
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from fastapi.responses import Response, StreamingResponse
 import redis
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.celery_app import celery_app
-from app.config import CELERY_RESULT_BACKEND, IDX_CONTENT, IDX_META, UPLOAD_TMP_DIR
+from app.config import CELERY_RESULT_BACKEND, ES_URL, IDX_CONTENT, IDX_META, UPLOAD_TMP_DIR
 from app.dtos.books_dtos import (
     BookCardDto,
     BookDto,
@@ -20,8 +20,9 @@ from app.dtos.books_dtos import (
 )
 from app.integrations.database import get_db_session
 from app.integrations.elasticsearch import es_post
-from app.integrations.object_storage import find_cover_key, get_object_bytes
-from app.integrations.orm import Book, Review, t_reading_progress
+from app.import_epub.es_support import es_delete_book_docs
+from app.integrations.object_storage import delete_book_objects, find_cover_key, get_object_bytes
+from app.integrations.orm import Book, Review, User, t_reading_progress
 from app.tasks.import_tasks import import_epub_task
 from app.utils.auth import get_user_id
 
@@ -33,7 +34,6 @@ RECOMMENDATION_SOURCE_LIMIT = 5
 RECOMMENDATION_CANDIDATE_POOL_SIZE = 50
 RECOMMENDATION_MIN_SEMANTIC_SCORE = 0.75
 RECOMMENDATION_RELATIVE_SCORE_RATIO = 0.95
-RECOMMENDATION_GAP_CUTOFF = 0.04
 RECOMMENDATION_CONTENT_POOL_SIZE = 300
 
 
@@ -44,6 +44,16 @@ async def _get_cover_path(book_id: int) -> str | None:
         return None
 
     return f"/books/{book_id}/cover"
+
+
+async def _require_admin(request: Request) -> None:
+    user_id = await get_user_id(request)
+
+    async with get_db_session() as db_session:
+        user = await db_session.get(User, user_id)
+
+    if user is None or user.role != "admin":
+        raise HTTPException(403, "Admin access required")
 
 
 def _average_vectors(vectors: list[list[float]]) -> list[float] | None:
@@ -168,20 +178,12 @@ def _filter_recommendation_candidates(
     relative_threshold = best_score * RECOMMENDATION_RELATIVE_SCORE_RATIO
 
     filtered: list[tuple[int, float]] = []
-    previous_score: float | None = None
 
     for book_id, score in sorted_candidates:
         if score < relative_threshold:
             break
 
-        if (
-            previous_score is not None
-            and previous_score - score > RECOMMENDATION_GAP_CUTOFF
-        ):
-            break
-
         filtered.append((book_id, score))
-        previous_score = score
 
     return filtered
 
@@ -427,11 +429,12 @@ async def _get_recommended_books(
     if not progress_rows:
         return []
 
+    excluded_book_ids = [int(row[0]) for row in progress_rows]
+    excluded_book_ids_set = set(excluded_book_ids)
     source_book_ids = [
         int(row[0])
         for row in progress_rows[:RECOMMENDATION_SOURCE_LIMIT]
     ]
-    excluded_book_ids = [int(row[0]) for row in progress_rows]
 
     source_res = await es_post(
         f"{IDX_META}/_search",
@@ -472,7 +475,6 @@ async def _get_recommended_books(
         },
     )
 
-    excluded_book_ids_set = set(excluded_book_ids)
     candidates: list[tuple[int, float]] = []
     for hit in rec_res.get("hits", {}).get("hits", []):
         book_id = _extract_book_id(hit)
@@ -602,6 +604,34 @@ async def get_book_by_id(book_id: int) -> BookDto:
         avg_rating=float(row.avg_rating) if row.avg_rating is not None else None,
         reviews_count=int(row.reviews_count),
     )
+
+
+@router.delete("/{book_id}", status_code=204)
+async def delete_book(book_id: int, request: Request) -> Response:
+    await _require_admin(request)
+
+    async with get_db_session() as db_session:
+        book_exists = await db_session.scalar(
+            select(Book.id).where(Book.id == book_id)
+        )
+        if book_exists is None:
+            raise HTTPException(404, "Book not found!")
+
+        await db_session.execute(
+            delete(Book).where(Book.id == book_id)
+        )
+        await db_session.commit()
+
+    await asyncio.to_thread(
+        es_delete_book_docs,
+        ES_URL,
+        IDX_META,
+        IDX_CONTENT,
+        book_id,
+    )
+    await delete_book_objects(book_id)
+
+    return Response(status_code=204)
 
 
 @router.post("/upload", response_model=UploadBookResponseDto, status_code=202)

@@ -25,6 +25,7 @@ from app.import_epub.importer import (
     get_encoder_dim,
     is_encoder_cached,
 )
+from app.tasks.notification_tasks import notify_new_book_recommendations
 
 try:
     import torch
@@ -222,6 +223,10 @@ def import_epub_task(self, tmp_path: str, original_filename: str) -> Dict[str, A
             status_value = status.get("status")
             if isinstance(status_value, str) and status_value.startswith("skipped"):
                 raise ValueError("Битый EPUB: книга не содержит пригодного контента")
+
+            book_id = status.get("book_id")
+            if isinstance(book_id, int):
+                notify_new_book_recommendations.delay(book_id)
 
         return {
             "status": status,

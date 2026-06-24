@@ -18,6 +18,13 @@ function passwordsMatch(group: AbstractControl): ValidationErrors | null {
     return pwd === confirm ? null : { passwordsMismatch: true };
 }
 
+function emailRequiredForNotifications(group: AbstractControl): ValidationErrors | null {
+    const notify = group.get('notify_recommendations')?.value;
+    const email = group.get('email')?.value;
+
+    return notify && !email ? { emailRequiredForNotifications: true } : null;
+}
+
 @Component({
     selector: 'app-register',
     imports: [CommonModule, ReactiveFormsModule, RouterLink],
@@ -36,10 +43,12 @@ export class RegisterComponent {
     form = this.fb.nonNullable.group(
         {
             login: ['', [Validators.required, Validators.maxLength(255)]],
+            email: ['', [Validators.email, Validators.maxLength(320)]],
+            notify_recommendations: [false],
             password: ['', [Validators.required, Validators.minLength(6)]],
             confirmPassword: ['', [Validators.required]],
         },
-        { validators: passwordsMatch },
+        { validators: [passwordsMatch, emailRequiredForNotifications] },
     );
 
     errorFor(controlName: string): string | null {
@@ -60,18 +69,32 @@ export class RegisterComponent {
         );
     }
 
+    showEmailRequiredForNotifications(): boolean {
+        const email = this.form.get('email');
+
+        return (
+            !!this.form.errors?.['emailRequiredForNotifications'] &&
+            (email?.touched || this.submitted)
+        );
+    }
+
     submit() {
         this.submitted = true;
 
         if (this.form.invalid || this.isSubmitting) return;
 
-        const { login, password } = this.form.getRawValue();
+        const { login, password, email, notify_recommendations } = this.form.getRawValue();
 
         this.isSubmitting = true;
         this.errorMessage = '';
         this.form.disable();
 
-        this.auth.register({ login, password }).subscribe({
+        this.auth.register({
+            login,
+            password,
+            email: email || null,
+            notify_recommendations,
+        }).subscribe({
             next: () => {
                 this.isSubmitting = false;
                 this.form.enable();

@@ -7,7 +7,7 @@ import bcrypt
 from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
 
-from app.dtos.auth import AuthDTO
+from app.dtos.auth import AuthDTO, RegisterDTO
 from app.integrations.database import get_db_session
 from app.integrations.orm import Session, User
 
@@ -94,14 +94,20 @@ async def get_current_user(request: Request) -> User:
 
 
 @router.post("/register")
-async def register(dto: AuthDTO) -> Response:
+async def register(dto: RegisterDTO) -> Response:
     if len(dto.login) > 255:
         raise HTTPException(400, "Login is too long!")
+    if dto.email is not None and len(dto.email) > 320:
+        raise HTTPException(400, "Email is too long!")
+    if dto.notify_recommendations and dto.email is None:
+        raise HTTPException(400, "Email is required for recommendation notifications!")
 
     hashed_password = await asyncio.to_thread(_hash_password_sync, dto.password)
 
     new_user = User()
     new_user.login = dto.login
+    new_user.email = str(dto.email) if dto.email is not None else None
+    new_user.notify_recommendations = dto.notify_recommendations
     new_user.hashed_password = hashed_password
 
     async with get_db_session() as db_session:
