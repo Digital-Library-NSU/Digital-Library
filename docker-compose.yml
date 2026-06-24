@@ -210,6 +210,17 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REDIS_URL: redis://redis:6379/0
+
+      ES_URL: http://elasticsearch:9200
+      ES_INDEX_META: books_meta
+      IDX_META: books_meta
+
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-daramukomel56549@gmail.com}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-daramukomel56549@gmail.com}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
     volumes:
       - ./backend:/app
     command: celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=1 -Q notifications -n notifications@%h

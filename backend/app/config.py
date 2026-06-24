@@ -48,3 +48,12 @@ def _int_env(name: str, default: int) -> int:
 
 
 MAX_MISSING_SPINE = _int_env("MAX_MISSING_SPINE", 1)
+
+# Email notifications.
+SMTP_HOST = os.getenv("SMTP_HOST") or None
+SMTP_PORT = _int_env("SMTP_PORT", 587)
+SMTP_USER = os.getenv("SMTP_USER") or None
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD") or None
+SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER or "library@example.local")
+SMTP_USE_TLS = (os.getenv("SMTP_USE_TLS", "true").lower() in {
+                "1", "true", "yes", "on"})

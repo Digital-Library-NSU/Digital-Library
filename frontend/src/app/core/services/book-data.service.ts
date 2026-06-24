@@ -61,6 +61,10 @@ export class BookDataService {
         return this.api.get<Book>(`/books/${id}`);
     }
 
+    deleteBook(id: number): Observable<void> {
+        return this.api.delete<void>(`/books/${id}`);
+    }
+
     uploadBook(file: File): Observable<UploadBookResponse> {
         const formData = new FormData();
         formData.append('file', file);

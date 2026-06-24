@@ -211,6 +211,22 @@ export class ProfileComponent implements OnInit {
         }
     }
 
+    onBookDeleted(bookId: number) {
+        this.selectedBook.set(null);
+        this.reading.update((items) =>
+            items.filter((item) => item.book.book_id !== bookId),
+        );
+        this.finished.update((items) =>
+            items.filter((item) => item.book.book_id !== bookId),
+        );
+        this.reviews.update((items) =>
+            items.filter((item) => item.book.book_id !== bookId),
+        );
+        this.loadedTabs.delete('reading');
+        this.loadedTabs.delete('finished');
+        this.loadedTabs.delete('reviews');
+    }
+
     profileReviewToReview(item: ProfileReview): Review {
         return {
             id: item.id,

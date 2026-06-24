@@ -2,7 +2,7 @@ import datetime
 import uuid
 from typing import Optional
 
-from sqlalchemy import (ARRAY, BigInteger, CheckConstraint, Column, Date,
+from sqlalchemy import (ARRAY, BigInteger, Boolean, CheckConstraint, Column, Date,
                         DateTime, Enum, Float, ForeignKeyConstraint, Index, Integer,
                         PrimaryKeyConstraint, String, Table, Text,
                         UniqueConstraint, Uuid, text)
@@ -54,6 +54,9 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
     login: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[Optional[str]] = mapped_column(String(320))
+    notify_recommendations: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text('false'))
     hashed_password: Mapped[str] = mapped_column(String(60), nullable=False)
     role: Mapped[str] = mapped_column(
         Enum(
@@ -304,4 +307,34 @@ t_reading_progress = Table(
         'user_id',
         'book_id',
         name='reading_progress_user_id_book_id_key')
+)
+
+
+t_recommendation_notifications = Table(
+    'recommendation_notifications', Base.metadata,
+    Column('user_id', Uuid, nullable=False),
+    Column('book_id', BigInteger, nullable=False),
+    Column('score', Float, nullable=False),
+    Column('sent_at', DateTime, nullable=False, server_default=text('now()')),
+    CheckConstraint(
+        'score >= 0',
+        name='recommendation_notifications_score_check'),
+    ForeignKeyConstraint(
+        ['book_id'],
+        ['books.id'],
+        ondelete='CASCADE',
+        name='recommendation_notifications_book_id_fkey'),
+    ForeignKeyConstraint(
+        ['user_id'],
+        ['users.id'],
+        ondelete='CASCADE',
+        name='recommendation_notifications_user_id_fkey'),
+    PrimaryKeyConstraint(
+        'user_id',
+        'book_id',
+        name='recommendation_notifications_pkey'),
+    Index(
+        'idx_recommendation_notifications_user_sent',
+        'user_id',
+        'sent_at')
 )

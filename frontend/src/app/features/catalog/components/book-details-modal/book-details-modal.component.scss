@@ -139,6 +139,38 @@ div {
     color: #2980b9;
 }
 
+.admin-actions {
+    margin: 1rem 0;
+}
+
+.delete-book-btn {
+    border: 1px solid #c0392b;
+    background: #c0392b;
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+
+    &:hover:not(:disabled) {
+        background: #a93226;
+    }
+
+    &:disabled {
+        opacity: 0.65;
+        cursor: not-allowed;
+    }
+}
+
+.delete-error {
+    margin: 0.75rem 0;
+    color: #c0392b;
+    background: #fadbd8;
+    padding: 8px 10px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
 @keyframes fadeIn {
     from {
         opacity: 0;

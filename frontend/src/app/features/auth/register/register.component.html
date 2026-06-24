@@ -11,6 +11,23 @@
         </label>
 
         <label class="auth-field">
+            <span>Email</span>
+            <input type="email" formControlName="email" autocomplete="email">
+            @if (errorFor('email'); as msg) {
+            <span class="field-error">{{ msg }}</span>
+            }
+        </label>
+
+        <label class="auth-checkbox">
+            <input type="checkbox" formControlName="notify_recommendations">
+            <span>Присылать уведомления о новых рекомендованных книгах</span>
+        </label>
+
+        @if (showEmailRequiredForNotifications()) {
+        <div class="error-alert">Укажите email для уведомлений.</div>
+        }
+
+        <label class="auth-field">
             <span>Пароль</span>
             <input type="password" formControlName="password" autocomplete="new-password">
             @if (errorFor('password'); as msg) {
@@ -35,7 +52,7 @@
         }
 
         <button type="submit" class="auth-btn" [disabled]="form.invalid || isSubmitting">
-            @if (isSubmitting) { Создаём аккаунт... } @else { Зарегистрироваться }
+            @if (isSubmitting) { Создаем аккаунт... } @else { Зарегистрироваться }
         </button>
 
         <p class="auth-switch">

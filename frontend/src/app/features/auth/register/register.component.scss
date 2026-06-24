@@ -64,6 +64,20 @@
     }
 }
 
+.auth-checkbox {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    color: #4a5568;
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+    font-size: 0.9rem;
+    line-height: 1.35;
+
+    input {
+        margin-top: 2px;
+    }
+}
+
 .auth-btn {
     background-color: var(--primary-text-color);
     color: white;

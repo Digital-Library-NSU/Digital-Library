@@ -103,6 +103,27 @@ async def find_cover_key(book_id: int) -> Optional[str]:
     return None
 
 
+async def delete_book_objects(book_id: int) -> None:
+    session = aioboto3.Session()
+    prefix = f"books/{book_id}/"
+
+    async with session.client("s3", **_client_kwargs()) as client:
+        paginator = client.get_paginator("list_objects_v2")
+
+        async for page in paginator.paginate(Bucket=MINIO_BUCKET, Prefix=prefix):
+            objects = [
+                {"Key": item["Key"]}
+                for item in page.get("Contents", [])
+            ]
+            if not objects:
+                continue
+
+            await client.delete_objects(
+                Bucket=MINIO_BUCKET,
+                Delete={"Objects": objects},
+            )
+
+
 def book_cover_key(book_id: int, ext: str) -> str:
     ext = ext if ext.startswith(".") else f".{ext}"
     return f"books/{book_id}/cover{ext.lower()}"

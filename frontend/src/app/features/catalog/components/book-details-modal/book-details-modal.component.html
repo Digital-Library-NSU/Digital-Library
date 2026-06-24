@@ -46,6 +46,27 @@
                 </div>
                 }
 
+                @if (auth.isAdmin()) {
+                <div class="admin-actions">
+                    <button
+                        type="button"
+                        class="delete-book-btn"
+                        [disabled]="isDeleting()"
+                        (click)="deleteCurrentBook()"
+                    >
+                        @if (isDeleting()) {
+                        Удаляем...
+                        } @else {
+                        Удалить книгу
+                        }
+                    </button>
+                </div>
+                }
+
+                @if (deleteError()) {
+                <div class="delete-error">{{ deleteError() }}</div>
+                }
+
                 <app-book-reviews
                     [bookId]="book.book_id"
                     (reviewsChanged)="onReviewsChanged()"

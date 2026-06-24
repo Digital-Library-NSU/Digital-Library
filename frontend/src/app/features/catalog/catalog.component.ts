@@ -174,6 +174,18 @@ export class CatalogComponent implements OnDestroy {
         );
     }
 
+    onBookDeleted(bookId: number) {
+        this.books = this.books.filter((book) => book.book_id !== bookId);
+        this.selectedBook = null;
+
+        if (this.viewMode === 'search') {
+            this.searchResults = this.searchResults.filter(
+                (hit) => hit.book.book_id !== bookId,
+            );
+            this.searchTotal = Math.max(0, this.searchTotal - 1);
+        }
+    }
+
     openUploadModal() {
         this.showUploadModal = true;
     }
