@@ -29,10 +29,32 @@ class BookDto(BaseModel):
 class UploadBookResponseDto(BaseModel):
     task_id: str
     status: str
+    filename: str | None = None
 
 
 class ImportTaskStatusDto(BaseModel):
     task_id: str
     state: str
+    filename: str | None = None
+    title: str | None = None
+    authors: str | None = None
+    stage: str | None = None
+    status_label: str | None = None
+    progress_percent: float | None = None
+    current: int | None = None
+    total: int | None = None
+    unit: str | None = None
+    eta_seconds: int | None = None
+    queued: bool = False
+    started_at: str | None = None
+    updated_at: str | None = None
     result: Any | None = None
     error: str | None = None
+
+
+class CancelImportResponseDto(BaseModel):
+    task_id: str
+    state: str
+    stage: str
+    status_label: str
+    filename: str | None = None

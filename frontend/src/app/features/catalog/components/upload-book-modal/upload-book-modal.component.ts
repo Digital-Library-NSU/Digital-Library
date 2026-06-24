@@ -1,7 +1,10 @@
 import { CommonModule } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Component, EventEmitter, inject, Output } from '@angular/core';
-import { BookDataService } from '../../../../core/services/book-data.service';
+import {
+    BookDataService,
+    UploadBookResponse,
+} from '../../../../core/services/book-data.service';
 
 @Component({
     selector: 'app-upload-book-modal',
@@ -11,12 +14,12 @@ import { BookDataService } from '../../../../core/services/book-data.service';
 })
 export class UploadBookModalComponent {
     @Output() close = new EventEmitter<boolean>();
+    @Output() uploadQueued = new EventEmitter<UploadBookResponse>();
 
     private bookService = inject(BookDataService);
 
     selectedFile: File | null = null;
     isUploading = false;
-    isSuccess = false;
     isDragOver = false;
     errorMessage = '';
 
@@ -35,9 +38,10 @@ export class UploadBookModalComponent {
         this.errorMessage = '';
 
         this.bookService.uploadBook(this.selectedFile).subscribe({
-            next: () => {
+            next: (response) => {
                 this.isUploading = false;
-                this.isSuccess = true;
+                this.uploadQueued.emit(response);
+                this.close.emit(false);
             },
             error: (err: HttpErrorResponse) => {
                 this.isUploading = false;
@@ -54,7 +58,7 @@ export class UploadBookModalComponent {
     }
 
     closeModal() {
-        this.close.emit(this.isSuccess);
+        this.close.emit(false);
     }
 
     onDragOver(event: DragEvent) {

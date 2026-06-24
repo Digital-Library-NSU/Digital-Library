@@ -7,6 +7,40 @@ import { HttpClient } from '@angular/common/http';
 
 export type BooksSortMode = 'popular' | 'new' | 'recommended';
 
+export interface UploadBookResponse {
+    task_id: string;
+    status: string;
+    filename?: string | null;
+}
+
+export interface ImportTaskStatus {
+    task_id: string;
+    state: string;
+    filename?: string | null;
+    title?: string | null;
+    authors?: string | null;
+    stage?: string | null;
+    status_label?: string | null;
+    progress_percent?: number | null;
+    current?: number | null;
+    total?: number | null;
+    unit?: string | null;
+    eta_seconds?: number | null;
+    queued: boolean;
+    started_at?: string | null;
+    updated_at?: string | null;
+    result?: any;
+    error?: string | null;
+}
+
+export interface CancelImportResponse {
+    task_id: string;
+    state: string;
+    stage: string;
+    status_label: string;
+    filename?: string | null;
+}
+
 @Injectable({
     providedIn: 'root',
 })
@@ -27,11 +61,27 @@ export class BookDataService {
         return this.api.get<Book>(`/books/${id}`);
     }
 
-    uploadBook(file: File): Observable<any> {
+    uploadBook(file: File): Observable<UploadBookResponse> {
         const formData = new FormData();
         formData.append('file', file);
 
-        return this.http.post(`${this.baseUrl}/books/upload`, formData);
+        return this.http.post<UploadBookResponse>(
+            `${this.baseUrl}/books/upload`,
+            formData,
+        );
+    }
+
+    getImportStatus(taskId: string): Observable<ImportTaskStatus> {
+        return this.api.get<ImportTaskStatus>(`/books/imports/${taskId}`);
+    }
+
+    getImportEventsUrl(taskIds: string[]): string {
+        const ids = taskIds.map((taskId) => taskId.trim()).filter(Boolean).join(',');
+        return `${this.baseUrl}/books/imports/events?ids=${encodeURIComponent(ids)}`;
+    }
+
+    cancelImport(taskId: string): Observable<CancelImportResponse> {
+        return this.api.delete<CancelImportResponse>(`/books/imports/${taskId}`);
     }
 
     searchFullText(

@@ -9,11 +9,17 @@ celery_app = Celery(
     backend=CELERY_RESULT_BACKEND,
     include=[
         "app.tasks.import_tasks",
+        "app.tasks.notification_tasks",
     ],
 )
 
 celery_app.conf.update(
     task_track_started=True,
+    worker_proc_alive_timeout=240,
+    task_routes={
+        "books.import_epub": {"queue": "imports"},
+        "notifications.*": {"queue": "notifications"},
+    },
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],

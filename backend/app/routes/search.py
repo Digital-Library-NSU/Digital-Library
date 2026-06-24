@@ -2,7 +2,7 @@ import asyncio
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, Query, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.config import IDX_CONTENT, IDX_META
 from app.dtos.books_dtos import BookCardDto
@@ -17,7 +17,7 @@ from app.integrations.database import get_db_session
 from app.integrations.elasticsearch import es_post
 from app.integrations.embed_model import _HAS_ST, encode_query
 from app.integrations.object_storage import find_cover_key
-from app.integrations.orm import Book
+from app.integrations.orm import Book, Review
 from app.utils.paragraph_extras import fetch_paragraph_extras
 from app.utils.search_highlight import CONTENT_HIT_SOURCE, resolve_hit_block_index
 
@@ -38,24 +38,36 @@ async def fetch_books_by_ids(ids: List[int]) -> Dict[int, BookCardDto]:
         return {}
 
     async with get_db_session() as db:
-        stmt = select(Book).where(Book.id.in_(ids))
+        stmt = (
+            select(
+                Book,
+                func.avg(Review.rating).label("avg_rating"),
+                func.count(Review.id).label("reviews_count"),
+            )
+            .outerjoin(Review, Review.book_id == Book.id)
+            .where(Book.id.in_(ids))
+            .group_by(Book.id)
+        )
         result = await db.execute(stmt)
-        books = list(result.scalars())
+        rows = result.all()
 
     cover_paths = [
-        await _get_cover_path(int(book.id))
-        for book in books
+        await _get_cover_path(int(row.Book.id))
+        for row in rows
     ]
 
     by_id: Dict[int, BookCardDto] = {}
 
-    for idx, b in enumerate(books):
+    for idx, row in enumerate(rows):
+        b = row.Book
         bid = int(b.id)
         by_id[bid] = BookCardDto(
             book_id=bid,
             title=b.title,
             cover_path=cover_paths[idx],
             authors=", ".join(b.authors or []),
+            avg_rating=float(row.avg_rating) if row.avg_rating is not None else None,
+            reviews_count=int(row.reviews_count),
         )
 
     return by_id
