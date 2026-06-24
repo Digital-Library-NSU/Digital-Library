@@ -392,53 +392,94 @@ async def semantic_search(
         1, int(num_candidates)
     )
 
-    filters: List[Dict[str, Any]] = []
+    meta_filters: List[Dict[str, Any]] = [{"exists": {"field": "book_vec"}}]
 
     if lang:
-        filters.append({"term": {"lang": lang}})
+        meta_filters.append({"term": {"lang": lang}})
 
     if book_id is not None:
-        filters.append({"term": {"book_id": str(book_id)}})
+        meta_filters.append({"ids": {"values": [str(book_id)]}})
 
-    body = {
+    meta_body = {
         "from": offset,
         "size": size,
-        "collapse": {"field": "book_id"},
         "knn": {
-            "field": "content_vec",
+            "field": "book_vec",
             "query_vector": qvec,
             "k": size + offset,
             "num_candidates": ncand,
-            **({"filter": {"bool": {"filter": filters}}} if filters else {}),
+            "filter": {"bool": {"filter": meta_filters}},
         },
-        "_source": [
-            "book_id",
-            "chapter_id",
-            "chapter_ord",
-            "title",
-            "lang",
-            "content",
-            "block_start",
-            "block_end",
-            "block_offsets",
-        ],
+        "_source": ["book_id"],
     }
 
-    res = await es_post(f"{IDX_CONTENT}/_search", body)
-    hits_raw = res.get("hits", {}).get("hits", [])
+    meta_res = await es_post(f"{IDX_META}/_search", meta_body)
+    meta_hits_raw = meta_res.get("hits", {}).get("hits", [])
 
-    doc_ids = [h.get("_id") for h in hits_raw if h.get("_id")]
-
-    book_ids: List[int] = []
-    for h in hits_raw:
+    ranked_book_hits: List[tuple[int, float]] = []
+    for h in meta_hits_raw:
         src = h.get("_source", {})
         try:
-            book_ids.append(int(src.get("book_id")))
+            bid = int(src.get("book_id") or h.get("_id"))
         except Exception:
-            pass
+            continue
+
+        ranked_book_hits.append((bid, float(h.get("_score") or 0.0)))
+
+    book_ids = [bid for bid, _score in ranked_book_hits]
+
+    async def _best_snippet_for_book(bid: int) -> Dict[str, Any] | None:
+        body = {
+            "size": 1,
+            "knn": {
+                "field": "content_vec",
+                "query_vector": qvec,
+                "k": 1,
+                "num_candidates": 100,
+                "filter": {
+                    "bool": {
+                        "filter": [{"term": {"book_id": str(bid)}}],
+                    }
+                },
+            },
+            "_source": [
+                "book_id",
+                "chapter_id",
+                "chapter_ord",
+                "title",
+                "lang",
+                "content",
+                "block_start",
+                "block_end",
+                "block_offsets",
+            ],
+        }
+        res = await es_post(f"{IDX_CONTENT}/_search", body)
+        hits = res.get("hits", {}).get("hits", [])
+        return hits[0] if hits else None
+
+    snippet_hits_raw = await asyncio.gather(
+        *[_best_snippet_for_book(bid) for bid in book_ids]
+    )
+    snippet_hits_by_book: Dict[int, Dict[str, Any]] = {}
+    doc_ids: List[str] = []
+
+    for hit in snippet_hits_raw:
+        if not hit:
+            continue
+
+        src = hit.get("_source", {})
+        try:
+            bid = int(src.get("book_id"))
+        except Exception:
+            continue
+
+        snippet_hits_by_book[bid] = hit
+        if hit.get("_id"):
+            doc_ids.append(hit["_id"])
 
     books_by_id, para_extras = await asyncio.gather(
-        fetch_books_by_ids(sorted({bid for bid in book_ids})),
+        fetch_books_by_ids(book_ids),
         fetch_paragraph_extras(doc_ids),
     )
 
@@ -454,13 +495,12 @@ async def semantic_search(
 
     hits: List[SemanticHitDTO] = []
 
-    for h in hits_raw:
-        src = h.get("_source", {})
-
-        try:
-            bid = int(src.get("book_id"))
-        except Exception:
+    for bid, book_score in ranked_book_hits:
+        h = snippet_hits_by_book.get(bid)
+        if h is None:
             continue
+
+        src = h.get("_source", {})
 
         book = books_by_id.get(bid)
         if not book:
@@ -504,7 +544,7 @@ async def semantic_search(
         hits.append(
             SemanticHitDTO(
                 book=book,
-                score=float(h.get("_score") or 0.0),
+                score=book_score,
                 snippet=snippet_dto,
             )
         )

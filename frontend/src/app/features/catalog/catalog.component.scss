@@ -138,6 +138,14 @@ div {
     margin-top: 3rem;
 }
 
+.load-more-state {
+    margin-top: 1.5rem;
+    text-align: center;
+    color: #6f6258;
+    font-family: "ALSSirius-Regular", "Courier New", Courier, monospace;
+    font-size: 0.95rem;
+}
+
 .import-toast-stack {
     position: fixed;
     right: max(1rem, calc((100vw - 1200px) / 2 - 320px));
