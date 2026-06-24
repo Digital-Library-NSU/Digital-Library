@@ -1,5 +1,11 @@
 import { CommonModule } from '@angular/common';
-import { Component, inject, NgZone, OnDestroy } from '@angular/core';
+import {
+    Component,
+    HostListener,
+    inject,
+    NgZone,
+    OnDestroy,
+} from '@angular/core';
 import { BookCardComponent } from './components/book-card/book-card.component';
 import { Book, BookCard, SearchHit } from '../../shared/models/book.model';
 import {
@@ -47,6 +53,8 @@ export class CatalogComponent implements OnDestroy {
 
     books: BookCard[] = [];
     isLoading = true;
+    isLoadingMore = false;
+    hasMoreBooks = true;
     error = '';
     selectedBook: Book | null = null;
     isDetailsLoading = false;
@@ -83,20 +91,45 @@ export class CatalogComponent implements OnDestroy {
     }
 
     loadBooks() {
+        this.offset = 0;
+        this.hasMoreBooks = true;
+        this.fetchBooksPage(false);
+    }
+
+    private fetchBooksPage(append: boolean) {
         if (this.sortMode === 'recommended' && !this.isAuthenticated()) {
             this.sortMode = 'popular';
             this.storeSortMode(this.sortMode);
         }
 
-        this.isLoading = true;
+        if (append) {
+            if (this.isLoading || this.isLoadingMore || !this.hasMoreBooks) {
+                return;
+            }
+            this.isLoadingMore = true;
+        } else {
+            this.isLoading = true;
+        }
         this.error = '';
 
         this.bookService
             .getAllBooks(this.limit, this.offset, this.sortMode)
-            .pipe(finalize(() => (this.isLoading = false)))
+            .pipe(
+                finalize(() => {
+                    if (append) {
+                        this.isLoadingMore = false;
+                    } else {
+                        this.isLoading = false;
+                    }
+                }),
+            )
             .subscribe({
                 next: (response) => {
-                    this.books = response;
+                    this.books = append
+                        ? [...this.books, ...response]
+                        : response;
+                    this.hasMoreBooks = response.length === this.limit;
+                    this.offset += response.length;
                 },
                 error: (err) => {
                     console.error(err);
@@ -113,6 +146,20 @@ export class CatalogComponent implements OnDestroy {
         this.storeSortMode(nextMode);
         this.offset = 0;
         this.loadBooks();
+    }
+
+    @HostListener('window:scroll')
+    onWindowScroll() {
+        if (this.viewMode !== 'default') return;
+        if (this.isLoading || this.isLoadingMore || !this.hasMoreBooks) return;
+
+        const threshold = 500;
+        const scrollPosition = window.innerHeight + window.scrollY;
+        const pageHeight = document.documentElement.scrollHeight;
+
+        if (scrollPosition >= pageHeight - threshold) {
+            this.fetchBooksPage(true);
+        }
     }
 
     private getStoredSortMode(): BooksSortMode {

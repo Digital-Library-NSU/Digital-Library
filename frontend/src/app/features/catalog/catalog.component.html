@@ -63,6 +63,10 @@
             <p>Архивы пусты.</p>
         </div>
         }
+
+        @if (isLoadingMore) {
+        <div class="load-more-state">Загружаем еще...</div>
+        }
     </div>
     }
     }
